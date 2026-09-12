@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {KuskaEscrow} from "../src/KuskaEscrow.sol";
 import {MockUSD} from "../src/MockUSD.sol";
 
@@ -14,6 +15,16 @@ contract Deploy is Script {
         address arbiter = vm.envAddress("ARBITER_ADDRESS");
         uint64 disputeWindow = uint64(vm.envOr("DISPUTE_WINDOW", uint256(90)));
         address tokenAddress = vm.envOr("TOKEN_ADDRESS", address(0));
+
+        require(arbiter != address(0), "ARBITER_ADDRESS required");
+
+        bool allowMockDeploy = block.chainid == 133 || block.chainid == 31337;
+
+        if (tokenAddress == address(0)) {
+            require(allowMockDeploy, "TOKEN_ADDRESS required on this chain");
+        } else {
+            require(IERC20Metadata(tokenAddress).decimals() == 6, "TOKEN_ADDRESS must have 6 decimals");
+        }
 
         vm.startBroadcast(deployerPk);
 
