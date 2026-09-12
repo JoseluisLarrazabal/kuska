@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { formatEther, type Address, type Hex } from "viem";
+import type { Address, Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
 import { Button } from "../lib/ui/components/Button";
 import { Banner } from "../lib/ui/components/Banner";
 import { AddressMono } from "../lib/ui/components/AddressMono";
 import { AmountMono } from "../lib/ui/components/AmountMono";
+import { HashMono } from "../lib/ui/components/HashMono";
 import { DropletIcon } from "../lib/ui/components/Icon";
 import {
   getAccount,
@@ -23,7 +24,7 @@ import { getTokenBalance } from "../lib/ui/token";
 import { getHealth, postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { createOrder } from "../lib/ui/depositFlow";
 import { listTrackedOrders, trackOrder, type TrackedOrder } from "../lib/ui/orderRegistry";
-import { formatUnixTime } from "../lib/ui/format";
+import { formatHskAmount, formatUnixTime } from "../lib/ui/format";
 import { txExplorerUrl } from "../lib/ui/explorer";
 
 /** Saldo mínimo de HSK para pagar gas (docs/escrow-interface.md §6). */
@@ -290,10 +291,18 @@ export default function Demo() {
             address={data.health.relayer}
             hsk={data.health.relayerBalanceWei}
             musd={undefined}
+            warnLowGas
           />
         ) : null}
         {data?.roles.map((role) => (
-          <RoleRow key={role.address} label={role.label} address={role.address} hsk={role.hsk} musd={role.musd} />
+          <RoleRow
+            key={role.address}
+            label={role.label}
+            address={role.address}
+            hsk={role.hsk}
+            musd={role.musd}
+            warnLowGas={false}
+          />
         ))}
         {!getAccount() ? (
           <p className="text-sm text-verde-mut">
@@ -315,16 +324,26 @@ export default function Demo() {
           )}
         </p>
         <p className="mt-2 text-sm text-verde-mut">
-          Para que este dispositivo actúe como el <strong>vendedor de demo</strong> (necesario
+          Pegá abajo la llave privada de <code className="tabular-mono">VITE_DEMO_SELLER</code>{" "}
+          en el dispositivo que va a actuar como <strong>vendedor de demo</strong> (necesario
           para firmar <code className="tabular-mono">claimDelivery</code>/
-          <code className="tabular-mono">cancel</code> de los deals armados desde acá), pegá abajo
-          la llave privada de <code className="tabular-mono">VITE_DEMO_SELLER</code>.
+          <code className="tabular-mono">cancel</code>). Los deals para ese vendedor se arman
+          siempre desde <strong>otro dispositivo</strong> — el del comprador, en{" "}
+          <code className="tabular-mono">/comprar</code> o su propio panel de demo —: el
+          contrato no permite comprador == vendedor, así que este dispositivo nunca puede ser
+          vendedor de un deal que armó él mismo.
         </p>
         <p className="mt-1 text-sm font-medium text-terracota">
           Es una llave de demo en testnet, sin valor real. Nunca pegues acá una llave privada de
           verdad ni la de una cuenta con fondos reales.
         </p>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <form
+          className="mt-3 flex flex-col gap-2 sm:flex-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleImportKey();
+          }}
+        >
           <input
             type="password"
             inputMode="text"
@@ -336,10 +355,10 @@ export default function Demo() {
             disabled={pendingImportKey !== null}
             className="min-h-11 flex-1 rounded-card border border-verde-mut/30 bg-blanco px-3 text-sm text-verde tabular-mono disabled:opacity-60"
           />
-          <Button onClick={handleImportKey} disabled={pendingImportKey !== null || importKeyInput.trim().length === 0}>
+          <Button type="submit" disabled={pendingImportKey !== null || importKeyInput.trim().length === 0}>
             Importar llave
           </Button>
-        </div>
+        </form>
         {importMessage ? (
           <p className={`mt-2 text-sm ${importStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
             {importMessage}
@@ -460,7 +479,7 @@ export default function Demo() {
                   referencia — revisá el estado del pedido antes de reintentar, un reintento
                   puede fondear un segundo pedido si el primero sí se confirmó.
                 </p>
-                <p className="font-mono text-xs">{ambiguousDemoOrder.ref}</p>
+                <HashMono value={ambiguousDemoOrder.ref} />
                 {ambiguousDemoOrder.hash && txExplorerUrl(ambiguousDemoOrder.hash) ? (
                   <a
                     href={txExplorerUrl(ambiguousDemoOrder.hash)}
@@ -500,13 +519,23 @@ function RoleRow({
   address,
   hsk,
   musd,
+  warnLowGas,
 }: {
   label: string;
   address: Address;
   hsk: bigint;
   musd: bigint | undefined;
+  /**
+   * Solo el relayer (y el árbitro, si algún día se renderiza su fila) manda
+   * transacciones propias — ver el comentario grande sobre `lowBalanceRoles`
+   * más arriba en este archivo. Antes esta fila marcaba "bajo" en terracota
+   * para CUALQUIER rol con saldo bajo, incluido "Vendedor de demo" y "Tu
+   * cuenta local" — ninguno de los dos gasta su propio gas nunca, así que era
+   * una falsa alarma constante (siempre en 0 HSK) en una demo en vivo.
+   */
+  warnLowGas: boolean;
 }) {
-  const low = hsk < LOW_BALANCE_WEI;
+  const low = warnLowGas && hsk < LOW_BALANCE_WEI;
   return (
     <div className="rounded-card bg-blanco p-4">
       <div className="flex items-center justify-between">
@@ -515,7 +544,7 @@ function RoleRow({
       </div>
       <div className="mt-2 flex items-center justify-between text-sm">
         <span className={low ? "font-semibold text-terracota" : "text-verde-mut"}>
-          {formatEther(hsk)} HSK{low ? " · bajo" : ""}
+          {formatHskAmount(hsk)} HSK{low ? " · bajo" : ""}
         </span>
         {musd !== undefined ? <AmountMono amount={musd} size="sm" /> : null}
       </div>
