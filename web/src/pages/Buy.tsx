@@ -6,6 +6,7 @@ import { Field } from "../lib/ui/components/Field";
 import { Button } from "../lib/ui/components/Button";
 import { Banner } from "../lib/ui/components/Banner";
 import { AddressMono } from "../lib/ui/components/AddressMono";
+import { HashMono } from "../lib/ui/components/HashMono";
 import { getOrCreateAccount } from "../lib/burner";
 import { isBurnerPersistent } from "../lib/ui/burnerStatus";
 import { getDeploymentConfig } from "../config/deployment";
@@ -204,7 +205,7 @@ export default function Buy() {
                 referencia y revisá el estado del pedido antes de reintentar — un
                 reintento puede fondear un segundo pedido si el primero sí se confirmó.
               </p>
-              <p className="font-mono text-xs">{ambiguousOrder.ref}</p>
+              <HashMono value={ambiguousOrder.ref} />
               {ambiguousOrder.hash && txExplorerUrl(ambiguousOrder.hash) ? (
                 <a
                   href={txExplorerUrl(ambiguousOrder.hash)}
@@ -226,7 +227,9 @@ export default function Buy() {
       {status === "success" && txHash ? (
         <Banner kind="success" title="Pedido fondeado" className="mt-4">
           <p>Los fondos quedaron en custodia.</p>
-          <p className="mt-1 font-mono text-xs">{txHash}</p>
+          <div className="mt-1">
+            <HashMono value={txHash} />
+          </div>
           {txExplorerUrl(txHash) ? (
             <a
               href={txExplorerUrl(txHash)}

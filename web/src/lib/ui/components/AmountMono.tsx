@@ -17,7 +17,7 @@ export function AmountMono({ amount, size = "md", className = "" }: AmountMonoPr
   return (
     <span className={`font-mono font-semibold tabular-nums ${SIZE_CLASSES[size]} ${className}`}>
       {formatDemoUsd(amount)}
-      <span className="ml-1 font-sans text-[0.55em] font-normal text-verde-mut align-middle">
+      <span className="ml-1 whitespace-nowrap font-sans text-[0.55em] font-normal text-verde-mut align-middle">
         mUSD (demo)
       </span>
     </span>
