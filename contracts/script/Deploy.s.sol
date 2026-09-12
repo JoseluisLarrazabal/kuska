@@ -15,15 +15,22 @@ contract Deploy is Script {
         address arbiter = vm.envAddress("ARBITER_ADDRESS");
         uint64 disputeWindow = uint64(vm.envOr("DISPUTE_WINDOW", uint256(90)));
         address tokenAddress = vm.envOr("TOKEN_ADDRESS", address(0));
+        uint256 chainId = block.chainid;
+        string memory path = string.concat("deployments/", vm.toString(chainId), ".json");
 
         require(arbiter != address(0), "ARBITER_ADDRESS required");
-
-        bool allowMockDeploy = block.chainid == 133 || block.chainid == 31337;
+        require(
+            !vm.exists(path) || vm.envOr("ALLOW_REDEPLOY", false),
+            string.concat(
+                path, " already exists; re-running this script would orphan the live deployment. Set ALLOW_REDEPLOY=true to override."
+            )
+        );
 
         if (tokenAddress == address(0)) {
-            require(allowMockDeploy, "TOKEN_ADDRESS required on this chain");
+            require(chainId == 133 || chainId == 31337, "TOKEN_ADDRESS required on this chain");
         } else {
             require(IERC20Metadata(tokenAddress).decimals() == 6, "TOKEN_ADDRESS must have 6 decimals");
+            require(_supportsPermit(tokenAddress), "TOKEN_ADDRESS must support EIP-2612 permit (missing nonces()/DOMAIN_SEPARATOR())");
         }
 
         vm.startBroadcast(deployerPk);
@@ -37,10 +44,7 @@ contract Deploy is Script {
 
         vm.stopBroadcast();
 
-        uint256 chainId = block.chainid;
-        uint256 deployBlock = block.number;
-        string memory explorer =
-            chainId == 177 ? "https://hsk.blockscout.com" : "https://testnet-explorer.hsk.xyz";
+        string memory explorer = chainId == 177 ? "https://hsk.blockscout.com" : "https://testnet-explorer.hsk.xyz";
 
         string memory objectKey = "deployment";
         vm.serializeUint(objectKey, "chainId", chainId);
@@ -48,15 +52,29 @@ contract Deploy is Script {
         vm.serializeAddress(objectKey, "token", token);
         vm.serializeAddress(objectKey, "arbiter", arbiter);
         vm.serializeUint(objectKey, "disputeWindow", disputeWindow);
-        vm.serializeUint(objectKey, "deployBlock", deployBlock);
+        vm.serializeUint(objectKey, "deployBlock", block.number);
         string memory json = vm.serializeString(objectKey, "explorer", explorer);
 
-        string memory path = string.concat("deployments/", vm.toString(chainId), ".json");
         vm.writeJson(json, path);
 
         console2.log("KuskaEscrow deployed at:", address(escrow));
         console2.log("Token:", token);
         console2.log("Arbiter:", arbiter);
         console2.log("Deployment written to:", path);
+    }
+
+    /// @dev Probes for EIP-2612 permit support via staticcall so a non-permit ERC20
+    /// (which passes the decimals() == 6 check but fails deep inside KuskaEscrow's
+    /// relayer deposit path with a misleading ERC20InsufficientAllowance) is rejected
+    /// here instead, with a clear message.
+    function _supportsPermit(address tokenAddress) internal view returns (bool) {
+        (bool okNonces, bytes memory nonceData) =
+            tokenAddress.staticcall(abi.encodeWithSignature("nonces(address)", address(0)));
+        if (!okNonces || nonceData.length != 32) return false;
+
+        (bool okDomain, bytes memory domainData) = tokenAddress.staticcall(abi.encodeWithSignature("DOMAIN_SEPARATOR()"));
+        if (!okDomain || domainData.length != 32) return false;
+
+        return true;
     }
 }
