@@ -1,0 +1,9 @@
+{
+  "arbiter": "0x3ED8c38464C7354BA9f3c85Cc952b397068e98ed",
+  "chainId": 133,
+  "deployBlock": 32996664,
+  "disputeWindow": 90,
+  "escrow": "0x5dE999B6360494dd704369190bB8d49cc5e5328d",
+  "explorer": "https://testnet-explorer.hsk.xyz",
+  "token": "0x64D9707dFf7e9c49B36b5025A70177eFe624793A"
+}
