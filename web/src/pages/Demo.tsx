@@ -24,6 +24,7 @@ import { getTokenBalance } from "../lib/ui/token";
 import { getHealth, postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { createOrder } from "../lib/ui/depositFlow";
 import { listTrackedOrders, trackOrder, type TrackedOrder } from "../lib/ui/orderRegistry";
+import { capItem } from "../lib/ui/orderLink";
 import { formatHskAmount, formatUnixTime } from "../lib/ui/format";
 import { txExplorerUrl } from "../lib/ui/explorer";
 
@@ -501,7 +502,12 @@ export default function Demo() {
             {demoOrders.map((order) => (
               <li key={order.ref} className="flex items-center justify-between text-sm">
                 <span className="text-verde-mut">{order.item}</span>
-                <Link to={`/pedido/${order.ref}`} className="font-medium text-verde underline">
+                <Link
+                  to={`/pedido/${order.ref}${
+                    order.item ? `?item=${encodeURIComponent(capItem(order.item))}` : ""
+                  }`}
+                  className="font-medium text-verde underline"
+                >
                   Ver pedido
                 </Link>
               </li>

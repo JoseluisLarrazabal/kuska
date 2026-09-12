@@ -13,6 +13,7 @@ import { getDeploymentConfig } from "../config/deployment";
 import { parseAmountInput } from "../lib/ui/format";
 import { createOrder } from "../lib/ui/depositFlow";
 import { trackOrder } from "../lib/ui/orderRegistry";
+import { capItem } from "../lib/ui/orderLink";
 import { postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { DropletIcon } from "../lib/ui/components/Icon";
@@ -21,6 +22,12 @@ import { DropletIcon } from "../lib/ui/components/Icon";
 const LIVE_DELIVERY_SECONDS = 1800;
 
 type Status = "idle" | "signing" | "relaying" | "success" | "error";
+
+/** Query string `?item=...` (recortado con `capItem`) para propagar la referencia del pedido a `/pedido/:ref`, o `""` si no hay item. */
+function itemQuery(item: string): string {
+  const capped = capItem(item);
+  return capped ? `?item=${encodeURIComponent(capped)}` : "";
+}
 
 export default function Buy() {
   const navigate = useNavigate();
@@ -121,8 +128,7 @@ export default function Buy() {
       setTxHash(outcome.data.hash);
       setStatus("success");
 
-      const query = item ? `?item=${encodeURIComponent(item)}` : "";
-      setTimeout(() => navigate(`/pedido/${orderRef}${query}`), 1200);
+      setTimeout(() => navigate(`/pedido/${orderRef}${itemQuery(item)}`), 1200);
     } catch (err) {
       setStatus("error");
       setErrorMessage(
@@ -225,7 +231,10 @@ export default function Buy() {
                     Ver la transacción en el explorer
                   </a>
                 ) : null}
-                <Link to={`/pedido/${ambiguousOrder.ref}`} className="font-medium underline">
+                <Link
+                  to={`/pedido/${ambiguousOrder.ref}${itemQuery(item)}`}
+                  className="font-medium underline"
+                >
                   Ver estado del pedido
                 </Link>
               </div>

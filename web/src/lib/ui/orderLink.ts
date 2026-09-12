@@ -7,17 +7,37 @@ const ITEM_QUERY_RE = /[?&]item=([^&#\s]*)/;
 export const MAX_ITEM_LENGTH = 120;
 
 /**
+ * Recorta un `item` a `MAX_ITEM_LENGTH` **por code point**, no por unidad
+ * UTF-16: `String#slice` cuenta unidades UTF-16, así que un texto con un
+ * carácter fuera del BMP (p. ej. un emoji, que ocupa un par subrogado de 2
+ * unidades) justo en el borde del corte puede partir el par y dejar un
+ * subrogado suelto — `encodeURIComponent` tira `URIError` con eso, lo que
+ * rompía el render de la tarjeta del vendedor (`Seller.tsx`, QR de
+ * `buildConfirmUrl`). `Array.from` sí itera por code point, así que el corte
+ * nunca cae en el medio de un par subrogado.
+ */
+export function capItem(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return "";
+  return Array.from(trimmed).slice(0, MAX_ITEM_LENGTH).join("");
+}
+
+/**
  * URL de confirmación que se codifica en el QR que muestra el vendedor.
  * Si el pedido tiene un `item` (label humano trackeado del lado del
  * vendedor), se propaga como query param para que `Deliver.tsx`
  * (`parseItemFromText`) pueda recuperarlo al escanear — sin esto el label
  * se perdía apenas el comprador escaneaba el QR del vendedor.
+ *
+ * Nunca tira: `capItem` recorta por code point antes de `encodeURIComponent`,
+ * así que ningún `item` de entrada (por más largo o con los emojis que sea)
+ * puede romper esta función.
  */
 export function buildConfirmUrl(orderRef: Hex, item?: string): string {
   const base = `${window.location.origin}/pedido/${orderRef}?accion=liberar`;
-  const trimmed = item?.trim();
-  if (!trimmed) return base;
-  const capped = trimmed.length > MAX_ITEM_LENGTH ? trimmed.slice(0, MAX_ITEM_LENGTH) : trimmed;
+  if (!item) return base;
+  const capped = capItem(item);
+  if (!capped) return base;
   return `${base}&item=${encodeURIComponent(capped)}`;
 }
 
@@ -38,7 +58,8 @@ export function parseOrderRefFromText(text: string): Hex | undefined {
  * origen ni el path del texto pegado para nada (ni navegación, ni
  * confianza), solo se lee el valor del query param `item` con una regex y se
  * decodifica. El resultado se renderiza siempre como texto de React (nunca
- * `dangerouslySetInnerHTML`) y se recorta a `MAX_ITEM_LENGTH` caracteres.
+ * `dangerouslySetInnerHTML`) y se recorta con `capItem` (por code point, ver
+ * `capItem`) a `MAX_ITEM_LENGTH`.
  */
 export function parseItemFromText(text: string): string | undefined {
   const match = text.match(ITEM_QUERY_RE);
@@ -51,7 +72,6 @@ export function parseItemFromText(text: string): string | undefined {
   } catch {
     return undefined; // percent-encoding malformado
   }
-  const trimmed = decoded.trim();
-  if (trimmed.length === 0) return undefined;
-  return trimmed.length > MAX_ITEM_LENGTH ? trimmed.slice(0, MAX_ITEM_LENGTH) : trimmed;
+  const capped = capItem(decoded);
+  return capped.length === 0 ? undefined : capped;
 }

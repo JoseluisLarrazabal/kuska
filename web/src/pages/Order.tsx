@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
@@ -25,7 +25,7 @@ import { useNow } from "../lib/ui/useNow";
 import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { endSentence, formatDeadline } from "../lib/ui/format";
-import { trackOrder } from "../lib/ui/orderRegistry";
+import { listTrackedOrders, trackOrder } from "../lib/ui/orderRegistry";
 
 const HEX32_RE = /^0x[0-9a-fA-F]{64}$/;
 
@@ -39,9 +39,18 @@ export default function Order() {
   const { ref } = useParams<{ ref: string }>();
   const [params] = useSearchParams();
   const highlightRelease = params.get("accion") === "liberar";
-  const item = params.get("item");
+  const itemParam = params.get("item");
 
   const validRef = ref && HEX32_RE.test(ref) ? (ref as Hex) : undefined;
+  // Si el link no trae `?item=` (p. ej. un link viejo, o un ref pegado a
+  // mano), buscamos el label guardado por `trackOrder` la última vez que
+  // este dispositivo vio este pedido con un item — sin esto, revisitar
+  // `/pedido/:ref` sin el query param mostraba el pedido sin referencia
+  // aunque este mismo dispositivo la hubiera visto antes.
+  const item = useMemo(
+    () => itemParam ?? (validRef ? listTrackedOrders().find((o) => o.ref === validRef)?.item : undefined),
+    [itemParam, validRef],
+  );
   const { data: deal, isLoading, isError, refetch } = useDeal(validRef);
   const { data: disputeWindow, isPlaceholderData: disputeWindowIsGuess } = useDisputeWindow();
   const now = useNow();

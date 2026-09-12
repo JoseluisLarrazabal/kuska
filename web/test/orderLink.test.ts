@@ -1,10 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
-import { buildConfirmUrl, MAX_ITEM_LENGTH, parseItemFromText, parseOrderRefFromText } from "../src/lib/ui/orderLink";
+import {
+  buildConfirmUrl,
+  capItem,
+  MAX_ITEM_LENGTH,
+  parseItemFromText,
+  parseOrderRefFromText,
+} from "../src/lib/ui/orderLink";
 
 const REF = `0x${"a".repeat(64)}` as Hex;
 
 const ORIGIN = "https://kuska.app";
+
+/**
+ * 119 caracteres ASCII + un emoji (par subrogado, ocupa 2 unidades UTF-16):
+ * largo total en unidades UTF-16 = 121, uno más que `MAX_ITEM_LENGTH` (120).
+ * `String#slice(0, 120)` corta justo en el medio del par subrogado del emoji
+ * (unidad 119 = high surrogate, 120 = low surrogate) y deja un subrogado
+ * suelto — eso es lo que hacía tirar `encodeURIComponent`. `capItem` corta
+ * por code point, así que el emoji queda entero o afuera, nunca partido.
+ */
+const ASCII_119_PLUS_EMOJI = `${"x".repeat(119)}😀`;
+
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    const isHigh = code >= 0xd800 && code <= 0xdbff;
+    const isLow = code >= 0xdc00 && code <= 0xdfff;
+    if (isHigh) {
+      const next = text.charCodeAt(i + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return true;
+      i++; // par válido, saltar la unidad baja
+    } else if (isLow) {
+      return true; // unidad baja sin la alta correspondiente antes
+    }
+  }
+  return false;
+}
 
 describe("buildConfirmUrl", () => {
   beforeEach(() => {
@@ -35,6 +67,40 @@ describe("buildConfirmUrl", () => {
     const url = buildConfirmUrl(REF, long);
     const raw = url.split("&item=").at(1) ?? "";
     expect(decodeURIComponent(raw)).toHaveLength(MAX_ITEM_LENGTH);
+  });
+
+  it("no tira con 119 ASCII + emoji (el corte por unidad UTF-16 partía el par subrogado)", () => {
+    expect(() => buildConfirmUrl(REF, ASCII_119_PLUS_EMOJI)).not.toThrow();
+    const url = buildConfirmUrl(REF, ASCII_119_PLUS_EMOJI);
+    const raw = url.split("&item=").at(1) ?? "";
+    const decoded = decodeURIComponent(raw);
+    expect(hasLoneSurrogate(decoded)).toBe(false);
+    // Round-trip: lo que queda en el link es exactamente lo que
+    // `parseItemFromText` recupera del lado del comprador.
+    expect(parseItemFromText(url)).toBe(decoded);
+  });
+});
+
+describe("capItem", () => {
+  it("recorta por code point, no por unidad UTF-16 (no parte pares subrogados)", () => {
+    const capped = capItem(ASCII_119_PLUS_EMOJI);
+    expect(hasLoneSurrogate(capped)).toBe(false);
+    // 119 ASCII + 1 emoji = 120 code points, exactamente MAX_ITEM_LENGTH:
+    // no hace falta cortar nada, el emoji queda entero.
+    expect(capped).toBe(ASCII_119_PLUS_EMOJI);
+  });
+
+  it("recorta a MAX_ITEM_LENGTH code points cuando hay que cortar de verdad", () => {
+    const long = `${"x".repeat(MAX_ITEM_LENGTH)}😀`; // 121 code points
+    const capped = capItem(long);
+    expect(Array.from(capped)).toHaveLength(MAX_ITEM_LENGTH);
+    expect(hasLoneSurrogate(capped)).toBe(false);
+    expect(capped).toBe("x".repeat(MAX_ITEM_LENGTH)); // el emoji queda afuera, entero (no partido)
+  });
+
+  it("trimea espacios antes de recortar", () => {
+    expect(capItem("  hola  ")).toBe("hola");
+    expect(capItem("   ")).toBe("");
   });
 });
 
@@ -79,6 +145,14 @@ describe("parseItemFromText", () => {
     const long = "x".repeat(MAX_ITEM_LENGTH + 50);
     const result = parseItemFromText(`https://x/pedido/${REF}?item=${long}`);
     expect(result).toHaveLength(MAX_ITEM_LENGTH);
+  });
+
+  it("no tira con 119 ASCII + emoji codificados en el query param", () => {
+    const url = `https://x/pedido/${REF}?item=${encodeURIComponent(ASCII_119_PLUS_EMOJI)}`;
+    expect(() => parseItemFromText(url)).not.toThrow();
+    const result = parseItemFromText(url);
+    expect(result).toBe(ASCII_119_PLUS_EMOJI);
+    expect(result && hasLoneSurrogate(result)).toBe(false);
   });
 
   it("devuelve undefined ante percent-encoding malformado en vez de tirar", () => {
