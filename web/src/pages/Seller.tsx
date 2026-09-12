@@ -238,7 +238,11 @@ function SellerOrderCard({
         <AddressMono address={deal.buyer} />
       </div>
       <div className="mt-2">
-        <AmountMono amount={deal.amount} size="sm" />
+        {deal.state === DealState.None ? (
+          <span className="font-mono text-base font-semibold text-verde-mut">—</span>
+        ) : (
+          <AmountMono amount={deal.amount} size="sm" />
+        )}
       </div>
 
       {!isLocalSeller ? (

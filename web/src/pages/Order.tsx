@@ -22,7 +22,12 @@ import {
 } from "../lib/ui/dealActions";
 import type { RelayOutcome } from "../lib/ui/relayer";
 import { useNow } from "../lib/ui/useNow";
-import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
+import {
+  canOpenDisputeWindow,
+  canReleaseAfterWindow,
+  canRequestRefund,
+  disputeTapDecision,
+} from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { endSentence, formatDeadline } from "../lib/ui/format";
 import { findTrackedOrder, trackOrder } from "../lib/ui/orderRegistry";
@@ -58,16 +63,21 @@ export default function Order() {
 
   // Confirmación de dos toques para "Abrir una disputa" (acción sensible: pasa
   // el pedido a un árbitro centralizado): el primer toque solo arma el botón
-  // por 5s, el segundo toque dentro de esa ventana ejecuta la acción. Se
-  // desarma solo al vencer el timeout, si el estado del pedido cambia (p. ej.
-  // otra pestaña ya la abrió, o ya se liberó el pago), o si cambia el pedido
-  // (`validRef`) — React reutiliza este componente al navegar entre rutas
-  // `/pedido/:ref`, así que sin `validRef` en las dependencias, armar la
-  // disputa en el pedido A y navegar al pedido B (con el mismo `deal.state`)
-  // dejaba el botón armado para B.
+  // por 5s, el segundo toque dentro de esa ventana ejecuta la acción. Un
+  // segundo toque que llega antes de `DISPUTE_CONFIRM_MIN_MS` (doble-click o
+  // doble-tap accidental) se ignora en vez de ejecutar — ver
+  // `disputeTapDecision` en `dealTiming.ts`. Se desarma solo al vencer el
+  // timeout, si el estado del pedido cambia (p. ej. otra pestaña ya la
+  // abrió, o ya se liberó el pago), o si cambia el pedido (`validRef`) —
+  // React reutiliza este componente al navegar entre rutas `/pedido/:ref`,
+  // así que sin `validRef` en las dependencias, armar la disputa en el
+  // pedido A y navegar al pedido B (con el mismo `deal.state`) dejaba el
+  // botón armado para B.
   const DISPUTE_CONFIRM_MS = 5000;
+  const DISPUTE_CONFIRM_MIN_MS = 500;
   const [disputeArmed, setDisputeArmed] = useState(false);
   const disputeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disputeArmedAtRef = useRef<number | null>(null);
 
   // se registra el link visitado: sirve para volver a encontrarlo desde /vendedor
   useEffect(() => {
@@ -76,6 +86,7 @@ export default function Order() {
 
   useEffect(() => {
     setDisputeArmed(false);
+    disputeArmedAtRef.current = null;
     if (disputeTimerRef.current) {
       clearTimeout(disputeTimerRef.current);
       disputeTimerRef.current = null;
@@ -291,16 +302,27 @@ export default function Order() {
                       variant="secondary"
                       busy={action.pending === "dispute"}
                       onClick={() => {
-                        if (!disputeArmed) {
+                        const decision = disputeTapDecision({
+                          armed: disputeArmed,
+                          armedAt: disputeArmedAtRef.current,
+                          now: Date.now(),
+                          minMs: DISPUTE_CONFIRM_MIN_MS,
+                          windowMs: DISPUTE_CONFIRM_MS,
+                        });
+                        if (decision === "ignore") return;
+                        if (decision === "arm") {
                           setDisputeArmed(true);
+                          disputeArmedAtRef.current = Date.now();
                           if (disputeTimerRef.current) clearTimeout(disputeTimerRef.current);
                           disputeTimerRef.current = setTimeout(() => {
                             setDisputeArmed(false);
+                            disputeArmedAtRef.current = null;
                             disputeTimerRef.current = null;
                           }, DISPUTE_CONFIRM_MS);
                           return;
                         }
                         setDisputeArmed(false);
+                        disputeArmedAtRef.current = null;
                         if (disputeTimerRef.current) {
                           clearTimeout(disputeTimerRef.current);
                           disputeTimerRef.current = null;

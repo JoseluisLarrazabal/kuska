@@ -74,8 +74,8 @@
      entre sí a gap-1.5 (6px). Acá el botón visible ya mide 36px, así que un
      inset de -4px alcanza igual el mínimo de 44px (36 + 2*4) sin invadir al
      vecino: con `gap-2` (8px) entre botones, el área de -4px llega hasta
-     4px del borde propio, dejando 4px libres antes del siguiente botón (8 -
-     2*4 = 0px de superposición). */
+     el punto medio del gap desde cada lado, así que las dos áreas de toque
+     se tocan justo en el medio (8 - 2*4 = 0px libres, 0px de superposición). */
   .tap-target-icon {
     position: relative;
   }
