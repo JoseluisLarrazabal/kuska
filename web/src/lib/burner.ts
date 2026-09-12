@@ -3,11 +3,13 @@ import {
   privateKeyToAccount,
   type PrivateKeyAccount,
 } from "viem/accounts";
-import type { Hex } from "viem";
+import type { Address, Hex } from "viem";
 
 const STORAGE_KEY = "kuska.burner.v1";
-const BACKUP_STORAGE_KEY = "kuska.burner.backup.v1";
+const HISTORY_STORAGE_KEY = "kuska.burner.history.v1";
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
+/** Cuántas llaves anteriores de este dispositivo se recuerdan como máximo. */
+const MAX_HISTORY = 5;
 
 /**
  * Error tipado para una llave privada inválida al importar. Se usa en vez de
@@ -34,10 +36,16 @@ let inMemoryKey: Hex | null = null;
 let inMemoryPersisted = false;
 
 // Mismo patrón de storage + fallback en memoria que la llave principal, pero
-// para el slot de backup (ver `importAccount`): guarda la llave que este
-// dispositivo tenía ANTES de un `importAccount` que la reemplazó, para poder
-// ofrecer "Restaurar la llave anterior" sin haberla perdido.
-let inMemoryBackupKey: Hex | null = null;
+// para el HISTORIAL de llaves anteriores (ver `importAccount`/
+// `restorePreviousAccount`): guarda, más reciente primero, las llaves que
+// este dispositivo tuvo activas antes de la actual, para poder restaurar
+// cualquiera de ellas sin haberla perdido. Un solo slot de backup (el diseño
+// anterior) perdía la llave A si el dispositivo importaba B y después C: el
+// backup quedaba pisado por B y A —con sus deals en custodia y su mUSD—
+// quedaba inalcanzable. Con un historial acotado (`MAX_HISTORY`) eso ya no
+// pasa mientras no se importen más de `MAX_HISTORY` llaves distintas entre
+// medio.
+let inMemoryHistory: Hex[] = [];
 
 function readStoredKey(): Hex | null {
   try {
@@ -62,33 +70,61 @@ function writeStoredKey(key: Hex): boolean {
   }
 }
 
-function readBackupKey(): Hex | null {
+function readHistoryKeys(): Hex[] {
   try {
-    const raw = window.localStorage.getItem(BACKUP_STORAGE_KEY);
-    if (!raw || !PRIVATE_KEY_RE.test(raw)) return null;
-    return raw as Hex;
+    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((k): k is Hex => typeof k === "string" && PRIVATE_KEY_RE.test(k));
   } catch {
-    return null;
+    // localStorage no disponible, o JSON corrupto
+    return [];
   }
 }
 
-/** Intenta persistir `key` en el slot de backup; igual fallback en memoria que la llave principal si `localStorage` tira. */
-function writeBackupKey(key: Hex): void {
-  inMemoryBackupKey = key;
+/** Intenta persistir el historial completo; igual fallback en memoria que la llave principal si `localStorage` tira. */
+function writeHistoryKeys(keys: Hex[]): void {
+  inMemoryHistory = keys;
   try {
-    window.localStorage.setItem(BACKUP_STORAGE_KEY, key);
+    window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(keys));
   } catch {
     // se mantiene en memoria (arriba) para esta sesión
   }
 }
 
-function clearBackupKey(): void {
+/** Historial vigente: `localStorage` si tiene algo, si no el fallback en memoria. */
+function getHistoryKeys(): Hex[] {
+  const stored = readHistoryKeys();
+  return stored.length > 0 ? stored : inMemoryHistory;
+}
+
+/**
+ * Agrega `key` al frente del historial (más reciente primero), de-duplicado
+ * por dirección (case-insensitive — nunca dos entradas para la misma cuenta)
+ * y acotado a `MAX_HISTORY` entradas.
+ */
+function pushToHistory(key: Hex): void {
+  const address = privateKeyToAccount(key).address.toLowerCase();
+  const withoutDuplicate = getHistoryKeys().filter(
+    (k) => privateKeyToAccount(k).address.toLowerCase() !== address,
+  );
+  writeHistoryKeys([key, ...withoutDuplicate].slice(0, MAX_HISTORY));
+}
+
+/** Saca del historial la entrada para `address`, si había alguna. */
+function removeFromHistory(address: Address): void {
+  const target = address.toLowerCase();
+  writeHistoryKeys(getHistoryKeys().filter((k) => privateKeyToAccount(k).address.toLowerCase() !== target));
+}
+
+function clearHistory(): void {
   try {
-    window.localStorage.removeItem(BACKUP_STORAGE_KEY);
+    window.localStorage.removeItem(HISTORY_STORAGE_KEY);
   } catch {
     // no-op
   }
-  inMemoryBackupKey = null;
+  inMemoryHistory = [];
 }
 
 /**
@@ -156,11 +192,17 @@ export function previewAccountFromKey(privateKey: string): PrivateKeyAccount {
  * privada NUNCA vive en el bundle ni en una env `VITE_*` (es pública).
  *
  * Si ya había una cuenta distinta en este dispositivo, esa llave anterior se
- * guarda primero en un slot de backup (`getBackupAccount`/
- * `restoreBackupAccount`) en vez de perderse: sin esto, importar la llave del
- * vendedor de demo sobre un dispositivo que ya venía usándose como comprador
- * dejaba sin firmante a los pedidos armados desde ahí, con su mUSD
- * inalcanzable.
+ * guarda primero en el historial de llaves anteriores (`getKeyHistory`/
+ * `restorePreviousAccount`) en vez de perderse: sin esto, importar la llave
+ * del vendedor de demo sobre un dispositivo que ya venía usándose como
+ * comprador dejaba sin firmante a los pedidos armados desde ahí, con su mUSD
+ * inalcanzable. Con un solo slot de backup (diseño anterior) alcanzaba con
+ * importar una segunda llave equivocada para perder la primera para siempre;
+ * el historial (acotado a `MAX_HISTORY`) resiste eso.
+ *
+ * Si la llave entrante ya estaba en el historial (se está "re-importando"
+ * algo que se había reemplazado antes), se saca de ahí: el historial nunca
+ * contiene la llave activa.
  *
  * Valida el formato antes de usarlo; tira `InvalidPrivateKeyError` si no es
  * un hex de 32 bytes con prefijo 0x. Igual que `getOrCreateAccount`, queda
@@ -176,8 +218,9 @@ export function importAccount(privateKey: string): PrivateKeyAccount {
 
   const existingKey = readStoredKey() ?? inMemoryKey;
   if (existingKey && existingKey.toLowerCase() !== key.toLowerCase()) {
-    writeBackupKey(existingKey);
+    pushToHistory(existingKey);
   }
+  removeFromHistory(privateKeyToAccount(key).address);
 
   inMemoryKey = key;
   inMemoryPersisted = writeStoredKey(key);
@@ -185,30 +228,39 @@ export function importAccount(privateKey: string): PrivateKeyAccount {
 }
 
 /**
- * Cuenta guardada en el slot de backup (la que este dispositivo tenía antes
- * del último `importAccount` que la reemplazó por una distinta), o `null` si
- * no hay ninguna. Para mostrar "Restaurar la llave anterior" sin exponer la
- * llave privada.
+ * Direcciones de las llaves anteriores de este dispositivo, más reciente
+ * primero (hasta `MAX_HISTORY`), sin exponer ninguna llave privada. Se
+ * puebla en `importAccount` (cada vez que se reemplaza la llave activa por
+ * una distinta) y en `restorePreviousAccount` (la llave activa que se
+ * reemplaza al restaurar pasa acá, en vez de perderse). Para listar "Llaves
+ * anteriores de este dispositivo" y dejar elegir cuál restaurar.
  */
-export function getBackupAccount(): PrivateKeyAccount | null {
-  const stored = readBackupKey();
-  if (stored) return privateKeyToAccount(stored);
-  if (inMemoryBackupKey) return privateKeyToAccount(inMemoryBackupKey);
-  return null;
+export function getKeyHistory(): Address[] {
+  return getHistoryKeys().map((k) => privateKeyToAccount(k).address);
 }
 
 /**
- * Restaura la cuenta del slot de backup como la cuenta activa de este
- * dispositivo y limpia el backup (un solo nivel: no hay pila de backups).
- * Devuelve `null` sin hacer nada si no había ninguna backup guardada.
+ * Restaura como cuenta activa la llave del historial correspondiente a
+ * `address`, sacándola del historial. La llave activa actual (si hay una y
+ * es distinta) NO se pierde: pasa a ocupar un lugar en el historial — es un
+ * swap, no un descarte. Devuelve `null` sin hacer nada si `address` no está
+ * en el historial.
  */
-export function restoreBackupAccount(): PrivateKeyAccount | null {
-  const backup = readBackupKey() ?? inMemoryBackupKey;
-  if (!backup) return null;
-  inMemoryKey = backup;
-  inMemoryPersisted = writeStoredKey(backup);
-  clearBackupKey();
-  return privateKeyToAccount(backup);
+export function restorePreviousAccount(address: Address): PrivateKeyAccount | null {
+  const target = getHistoryKeys().find(
+    (k) => privateKeyToAccount(k).address.toLowerCase() === address.toLowerCase(),
+  );
+  if (!target) return null;
+
+  const currentKey = readStoredKey() ?? inMemoryKey;
+  removeFromHistory(address);
+  if (currentKey && currentKey.toLowerCase() !== target.toLowerCase()) {
+    pushToHistory(currentKey);
+  }
+
+  inMemoryKey = target;
+  inMemoryPersisted = writeStoredKey(target);
+  return privateKeyToAccount(target);
 }
 
 /**
@@ -230,7 +282,7 @@ export function isPersistent(): boolean {
   return readStoredKey() !== null || inMemoryPersisted;
 }
 
-/** Borra la cuenta burner persistida y su backup (p. ej. para "olvidar" la demo). */
+/** Borra la cuenta burner persistida y su historial (p. ej. para "olvidar" la demo). */
 export function clearAccount(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
@@ -239,5 +291,5 @@ export function clearAccount(): void {
   }
   inMemoryKey = null;
   inMemoryPersisted = false;
-  clearBackupKey();
+  clearHistory();
 }

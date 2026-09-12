@@ -3,17 +3,18 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   clearAccount,
   getAccount,
-  getBackupAccount,
+  getKeyHistory,
   importAccount,
   InvalidPrivateKeyError,
   previewAccountFromKey,
-  restoreBackupAccount,
+  restorePreviousAccount,
 } from "../src/lib/burner";
 
 // Llaves descartables generadas al vuelo para el test (nunca una llave real
 // ni un literal hardcodeado en el repo).
 const TEST_PRIVATE_KEY = generatePrivateKey();
 const OTHER_PRIVATE_KEY = generatePrivateKey();
+const THIRD_PRIVATE_KEY = generatePrivateKey();
 
 /** `localStorage` en memoria, para simular un dispositivo que sí persiste. */
 function createFakeLocalStorage() {
@@ -122,7 +123,7 @@ describe("previewAccountFromKey", () => {
   });
 });
 
-describe("importAccount — backup de la llave anterior", () => {
+describe("importAccount — historial de llaves anteriores", () => {
   beforeEach(() => {
     clearAccount();
   });
@@ -131,68 +132,94 @@ describe("importAccount — backup de la llave anterior", () => {
     vi.unstubAllGlobals();
   });
 
-  it("no hay backup antes de importar nada", () => {
+  it("no hay historial antes de importar nada", () => {
     vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
-    expect(getBackupAccount()).toBeNull();
+    expect(getKeyHistory()).toEqual([]);
   });
 
-  it("al importar una llave distinta, la anterior queda en el slot de backup", () => {
+  it("al importar una llave distinta, la anterior queda en el historial", () => {
     vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
 
     importAccount(TEST_PRIVATE_KEY);
-    expect(getBackupAccount()).toBeNull(); // todavía no había nada que respaldar
+    expect(getKeyHistory()).toEqual([]); // todavía no había nada que respaldar
 
     importAccount(OTHER_PRIVATE_KEY);
 
     // La cuenta activa ahora es la nueva…
     expect(getAccount()?.address).toBe(privateKeyToAccount(OTHER_PRIVATE_KEY).address);
-    // …y la anterior quedó respaldada, no perdida.
-    expect(getBackupAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    // …y la anterior quedó en el historial, no perdida.
+    expect(getKeyHistory()).toEqual([privateKeyToAccount(TEST_PRIVATE_KEY).address]);
   });
 
-  it("importar la MISMA llave (mismo address) no crea un backup", () => {
+  it("importar la MISMA llave (mismo address) no agrega una entrada al historial", () => {
     vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
 
     importAccount(TEST_PRIVATE_KEY);
     importAccount(TEST_PRIVATE_KEY.toUpperCase().replace("0X", "0x") as `0x${string}`);
 
-    expect(getBackupAccount()).toBeNull();
+    expect(getKeyHistory()).toEqual([]);
   });
 
-  it("restoreBackupAccount() restaura la identidad anterior y vacía el backup", () => {
+  it("importar A→B→C y restaurar A recupera la llave original sin perder B (regresión: un solo slot de backup la perdía)", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+
+    importAccount(TEST_PRIVATE_KEY); // A activa
+    importAccount(OTHER_PRIVATE_KEY); // B activa, A → historial
+    importAccount(THIRD_PRIVATE_KEY); // C activa, B → historial
+
+    const addrA = privateKeyToAccount(TEST_PRIVATE_KEY).address;
+    const addrB = privateKeyToAccount(OTHER_PRIVATE_KEY).address;
+    const addrC = privateKeyToAccount(THIRD_PRIVATE_KEY).address;
+
+    // Con el diseño anterior (un solo slot), A ya estaría perdida acá.
+    expect(getKeyHistory()).toEqual([addrB, addrA]);
+
+    const restored = restorePreviousAccount(addrA);
+
+    expect(restored?.address).toBe(addrA);
+    expect(getAccount()?.address).toBe(addrA);
+    // C (la que estaba activa) pasa al historial en vez de perderse: es un
+    // swap, no un descarte.
+    expect(getKeyHistory()).toEqual([addrC, addrB]);
+  });
+
+  it("restorePreviousAccount() no hace nada y devuelve null si la dirección no está en el historial", () => {
     vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
 
     importAccount(TEST_PRIVATE_KEY);
-    importAccount(OTHER_PRIVATE_KEY);
-    expect(getAccount()?.address).toBe(privateKeyToAccount(OTHER_PRIVATE_KEY).address);
-
-    const restored = restoreBackupAccount();
-
-    expect(restored?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
-    expect(getAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
-    expect(getBackupAccount()).toBeNull(); // un solo nivel: no queda pila de backups
-  });
-
-  it("restoreBackupAccount() no hace nada y devuelve null si no hay backup", () => {
-    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
-
-    importAccount(TEST_PRIVATE_KEY);
-    const restored = restoreBackupAccount();
+    const restored = restorePreviousAccount(privateKeyToAccount(OTHER_PRIVATE_KEY).address);
 
     expect(restored).toBeNull();
     expect(getAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
   });
 
-  it("si localStorage tira, el backup igual queda disponible en memoria para esta sesión", () => {
+  it("el historial queda acotado a las últimas 5 llaves distintas", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+
+    const keys = Array.from({ length: 7 }, () => generatePrivateKey());
+    for (const key of keys) {
+      importAccount(key);
+    }
+
+    const history = getKeyHistory();
+    expect(history).toHaveLength(5);
+    // Más reciente primero: las últimas 5 anteriores a la activa (índices 5..1 de `keys`, la
+    // 6ta importada activa quedó afuera del historial y la 0 (la más vieja) se cayó por la cota).
+    const expectedOrder = [keys[5], keys[4], keys[3], keys[2], keys[1]];
+    expect(history).toEqual(expectedOrder.map((k) => privateKeyToAccount(k!).address));
+  });
+
+  it("si localStorage tira, el historial igual queda disponible en memoria para esta sesión", () => {
     vi.stubGlobal("window", { localStorage: createThrowingLocalStorage() });
 
     importAccount(TEST_PRIVATE_KEY);
     importAccount(OTHER_PRIVATE_KEY);
 
-    expect(getBackupAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    const addrA = privateKeyToAccount(TEST_PRIVATE_KEY).address;
+    expect(getKeyHistory()).toEqual([addrA]);
 
-    const restored = restoreBackupAccount();
-    expect(restored?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
-    expect(getAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    const restored = restorePreviousAccount(addrA);
+    expect(restored?.address).toBe(addrA);
+    expect(getAccount()?.address).toBe(addrA);
   });
 });
