@@ -150,106 +150,116 @@ export default function Buy() {
         </Banner>
       ) : null}
 
-      <div className="mt-6 flex flex-col gap-4">
-        <Field
-          label="Vendedor"
-          monospace
-          value={seller}
-          onChange={(e) => setSeller(e.target.value.trim())}
-          error={sellerError}
-          hint="Dirección 0x del vendedor (por defecto, el vendedor de demo)."
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <Field
-          label="Monto (demo)"
-          inputMode="decimal"
-          value={amountInput}
-          onChange={(e) => setAmountInput(e.target.value)}
-          error={amountError}
-          hint="mUSD de prueba — no es dinero real."
-        />
-        <Field
-          label="Referencia del pedido (opcional)"
-          value={item}
-          onChange={(e) => setItem(e.target.value)}
-          hint="Para vos y el vendedor. No se guarda en la cadena."
-          placeholder="p. ej. 40 cajas de tornillos M8"
-        />
-      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          // Mismo guard que el `disabled` del botón: sin esto, Enter podía
+          // mandar un segundo submit mientras el primero seguía en curso
+          // (firmando/enviando).
+          if (canSubmit) submit();
+        }}
+      >
+        <div className="mt-6 flex flex-col gap-4">
+          <Field
+            label="Vendedor"
+            monospace
+            value={seller}
+            onChange={(e) => setSeller(e.target.value.trim())}
+            error={sellerError}
+            hint="Dirección 0x del vendedor (por defecto, el vendedor de demo)."
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <Field
+            label="Monto (demo)"
+            inputMode="decimal"
+            value={amountInput}
+            onChange={(e) => setAmountInput(e.target.value)}
+            error={amountError}
+            hint="mUSD de prueba — no es dinero real."
+          />
+          <Field
+            label="Referencia del pedido (opcional)"
+            value={item}
+            onChange={(e) => setItem(e.target.value)}
+            hint="Para vos y el vendedor. No se guarda en la cadena."
+            placeholder="p. ej. 40 cajas de tornillos M8"
+          />
+        </div>
 
-      <div className="mt-3">
-        <button
-          type="button"
-          onClick={requestFaucet}
-          disabled={faucetStatus === "loading"}
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-verde-mut hover:text-verde disabled:opacity-60"
-        >
-          <DropletIcon size={16} />
-          {faucetStatus === "loading" ? "Pidiendo fondos…" : "Pedir mUSD de prueba para esta cuenta"}
-        </button>
-        {faucetMessage ? (
-          <p className={`mt-1 text-xs ${faucetStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
-            {faucetMessage}
-          </p>
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={requestFaucet}
+            disabled={faucetStatus === "loading"}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-verde-mut hover:text-verde disabled:opacity-60"
+          >
+            <DropletIcon size={16} />
+            {faucetStatus === "loading" ? "Pidiendo fondos…" : "Pedir mUSD de prueba para esta cuenta"}
+          </button>
+          {faucetMessage ? (
+            <p className={`mt-1 text-xs ${faucetStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
+              {faucetMessage}
+            </p>
+          ) : null}
+        </div>
+
+        {status === "error" && errorMessage ? (
+          <Banner kind="error" title="No se pudo fondear el pedido" className="mt-4">
+            <p>{errorMessage}</p>
+            {ambiguousOrder ? (
+              <div className="mt-2 flex flex-col items-start gap-1">
+                <p>
+                  No podemos confirmar si la transacción llegó a la cadena. Guardá esta
+                  referencia y revisá el estado del pedido antes de reintentar — un
+                  reintento puede fondear un segundo pedido si el primero sí se confirmó.
+                </p>
+                <HashMono value={ambiguousOrder.ref} />
+                {ambiguousOrder.hash && txExplorerUrl(ambiguousOrder.hash) ? (
+                  <a
+                    href={txExplorerUrl(ambiguousOrder.hash)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    Ver la transacción en el explorer
+                  </a>
+                ) : null}
+                <Link to={`/pedido/${ambiguousOrder.ref}`} className="font-medium underline">
+                  Ver estado del pedido
+                </Link>
+              </div>
+            ) : null}
+          </Banner>
         ) : null}
-      </div>
 
-      {status === "error" && errorMessage ? (
-        <Banner kind="error" title="No se pudo fondear el pedido" className="mt-4">
-          <p>{errorMessage}</p>
-          {ambiguousOrder ? (
-            <div className="mt-2 flex flex-col items-start gap-1">
-              <p>
-                No podemos confirmar si la transacción llegó a la cadena. Guardá esta
-                referencia y revisá el estado del pedido antes de reintentar — un
-                reintento puede fondear un segundo pedido si el primero sí se confirmó.
-              </p>
-              <HashMono value={ambiguousOrder.ref} />
-              {ambiguousOrder.hash && txExplorerUrl(ambiguousOrder.hash) ? (
-                <a
-                  href={txExplorerUrl(ambiguousOrder.hash)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline"
-                >
-                  Ver la transacción en el explorer
-                </a>
-              ) : null}
-              <Link to={`/pedido/${ambiguousOrder.ref}`} className="font-medium underline">
-                Ver estado del pedido
-              </Link>
+        {status === "success" && txHash ? (
+          <Banner kind="success" title="Pedido fondeado" className="mt-4">
+            <p>Los fondos quedaron en custodia.</p>
+            <div className="mt-1">
+              <HashMono value={txHash} />
             </div>
-          ) : null}
-        </Banner>
-      ) : null}
+            {txExplorerUrl(txHash) ? (
+              <a
+                href={txExplorerUrl(txHash)}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-block underline"
+              >
+                Ver en el explorer de HashKey Chain
+              </a>
+            ) : null}
+          </Banner>
+        ) : null}
 
-      {status === "success" && txHash ? (
-        <Banner kind="success" title="Pedido fondeado" className="mt-4">
-          <p>Los fondos quedaron en custodia.</p>
-          <div className="mt-1">
-            <HashMono value={txHash} />
-          </div>
-          {txExplorerUrl(txHash) ? (
-            <a
-              href={txExplorerUrl(txHash)}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-1 inline-block underline"
-            >
-              Ver en el explorer de HashKey Chain
-            </a>
-          ) : null}
-        </Banner>
-      ) : null}
-
-      <Button className="mt-6 w-full" onClick={submit} disabled={!canSubmit} busy={status === "signing" || status === "relaying"}>
-        {status === "signing"
-          ? "Firmando…"
-          : status === "relaying"
-            ? "Enviando…"
-            : "Confirmar y fondear"}
-      </Button>
+        <Button type="submit" className="mt-6 w-full" disabled={!canSubmit} busy={status === "signing" || status === "relaying"}>
+          {status === "signing"
+            ? "Firmando…"
+            : status === "relaying"
+              ? "Enviando…"
+              : "Confirmar y fondear"}
+        </Button>
+      </form>
 
       <p className="mt-3 text-xs text-verde-mut">
         Tu cuenta local: <AddressMono address={buyerPreview} />

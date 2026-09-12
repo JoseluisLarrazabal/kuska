@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatHskAmount, parseAmountInput } from "../src/lib/ui/format";
+import { endSentence, formatDeadline, formatHskAmount, parseAmountInput } from "../src/lib/ui/format";
 
 describe("parseAmountInput", () => {
   it("rechaza notación científica (pasaba con Number, rompía parseUnits)", () => {
@@ -73,5 +73,39 @@ describe("formatHskAmount", () => {
   it("nunca usa notación científica, ni para valores muy chicos", () => {
     expect(formatHskAmount(1n)).not.toMatch(/e/i);
     expect(formatHskAmount(1n).length).toBeGreaterThan(0);
+  });
+});
+
+describe("formatDeadline", () => {
+  const sameDayNow = Date.UTC(2026, 8, 13, 10, 0, 0) / 1000; // 13 sept 2026, 10:00 UTC
+
+  it("mismo día que `nowSeconds`: solo devuelve la hora, sin fecha", () => {
+    const deadline = Date.UTC(2026, 8, 13, 22, 30, 0) / 1000;
+    const result = formatDeadline(deadline, sameDayNow);
+    expect(result).not.toMatch(/sept/i);
+  });
+
+  it("otro día: antepone la fecha a la hora", () => {
+    const deadline = Date.UTC(2026, 8, 20, 22, 30, 0) / 1000;
+    const result = formatDeadline(deadline, sameDayNow);
+    expect(result).toMatch(/^\d{1,2} \w+.*,/);
+  });
+
+  it("acepta bigint para `unixSeconds`", () => {
+    expect(() => formatDeadline(BigInt(sameDayNow) + 3600n, sameDayNow)).not.toThrow();
+  });
+});
+
+describe("endSentence", () => {
+  it("agrega un punto si el texto no termina en uno", () => {
+    expect(endSentence("hola")).toBe("hola.");
+  });
+
+  it("no duplica el punto si el texto ya termina en uno", () => {
+    expect(endSentence("10:30 p. m.")).toBe("10:30 p. m.");
+  });
+
+  it("no duplica el punto si termina en punto con espacios finales", () => {
+    expect(endSentence("listo. ")).toBe("listo. ");
   });
 });

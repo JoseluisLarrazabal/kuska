@@ -24,7 +24,7 @@ import type { RelayOutcome } from "../lib/ui/relayer";
 import { useNow } from "../lib/ui/useNow";
 import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
-import { formatUnixTime } from "../lib/ui/format";
+import { endSentence, formatDeadline } from "../lib/ui/format";
 import { trackOrder } from "../lib/ui/orderRegistry";
 
 const HEX32_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -73,6 +73,7 @@ export default function Order() {
       : undefined;
 
   const disputeDeadline = deal ? deal.claimedAt + (disputeWindow ?? DEFAULT_DISPUTE_WINDOW_SECONDS) : undefined;
+  const canReleaseNow = canReleaseAfterWindow(disputeDeadline, disputeWindowIsGuess, now);
 
   async function runAction(name: string, run: () => Promise<RelayOutcome>) {
     setAction({ pending: name, error: null, lastTxHash: null });
@@ -215,11 +216,19 @@ export default function Order() {
             ) : null}
 
             {deal.state === DealState.Funded && role === "buyer" ? (
-              <p className="text-center text-sm text-verde-mut">
-                Esperando que el vendedor registre la entrega, antes de las{" "}
-                {formatUnixTime(deal.deliveryDeadline)}. Si vence el plazo sin que la
-                registre, vas a poder pedir el reembolso.
-              </p>
+              now >= Number(deal.deliveryDeadline) ? (
+                <p className="text-center text-sm text-verde-mut">
+                  Venció el plazo de entrega sin que el vendedor la registrara. Podés pedir
+                  el reembolso con el botón de abajo.
+                </p>
+              ) : (
+                <p className="text-center text-sm text-verde-mut">
+                  {endSentence(
+                    `Esperando que el vendedor registre la entrega, antes de las ${formatDeadline(deal.deliveryDeadline, now)}`,
+                  )}{" "}
+                  Si vence el plazo sin que la registre, vas a poder pedir el reembolso.
+                </p>
+              )
             ) : null}
 
             {deal.state === DealState.Funded && role !== "buyer" && role !== "seller" ? (
@@ -250,20 +259,33 @@ export default function Order() {
 
             {deal.state === DealState.DeliveryClaimed && role !== "buyer" ? (
               <p className="text-center text-sm text-verde-mut">
-                {!burner
-                  ? // Escenario típico de la demo en vivo: el comprador escaneó el QR
-                    // del vendedor con la CÁMARA NATIVA del teléfono (no el lector de
-                    // Kuska), que abre esto en un navegador sin la cuenta del
-                    // comprador. No se crea ninguna cuenta ni se ofrece firmar acá.
-                    "Este navegador no tiene la cuenta con la que se compró este pedido. Abrí este link en el navegador/dispositivo donde compraste, o escaneá el QR con el lector de Kuska (no con la cámara del teléfono)."
-                  : role === "seller"
-                    ? "Ya registraste la entrega. Pedile al comprador que escanee el QR (o abra este link) para confirmar la recepción y liberar el pago. Si no confirma antes de que venza la ventana de disputa, vas a poder liberar el pago igual."
-                    : "Este pedido no es tuyo — no hay nada para hacer acá con esta cuenta."}
+                {role === "seller" ? (
+                  "Ya registraste la entrega. Pedile al comprador que escanee el QR (o abra este link) para confirmar la recepción y liberar el pago. Si no confirma antes de que venza la ventana de disputa, vas a poder liberar el pago igual."
+                ) : (
+                  // Ni comprador ni vendedor de este pedido, con o sin cuenta local.
+                  // Escenario típico de la demo en vivo: el comprador escaneó el QR
+                  // del vendedor con la CÁMARA NATIVA del teléfono (no el lector de
+                  // Kuska), que abre esto en un navegador sin la cuenta del
+                  // comprador — o con la cuenta de OTRO rol ya usada antes en ese
+                  // mismo dispositivo. En ningún caso se crea una cuenta ni se
+                  // ofrece firmar acá; nunca se dice "no hay nada para hacer" porque
+                  // el botón de liberar por ventana vencida (abajo) puede seguir
+                  // disponible para cualquier cuenta.
+                  <>
+                    {burner
+                      ? "Esta cuenta de este dispositivo no es la que compró este pedido."
+                      : "Este navegador no tiene la cuenta con la que se compró este pedido."}{" "}
+                    Abrí este link en el navegador/dispositivo donde compraste, o escaneá el
+                    QR con el lector de Kuska (no con la cámara del teléfono).
+                    {canReleaseNow
+                      ? " Venció la ventana de disputa: cualquiera puede liberar el pago con el botón de abajo."
+                      : ""}
+                  </>
+                )}
               </p>
             ) : null}
 
-            {deal.state === DealState.DeliveryClaimed &&
-            canReleaseAfterWindow(disputeDeadline, disputeWindowIsGuess, now) ? (
+            {deal.state === DealState.DeliveryClaimed && canReleaseNow ? (
               <Button
                 variant="secondary"
                 busy={action.pending === "auto-release"}

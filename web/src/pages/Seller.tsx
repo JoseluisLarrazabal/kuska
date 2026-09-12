@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
 import { Field } from "../lib/ui/components/Field";
@@ -10,7 +10,7 @@ import { AddressMono } from "../lib/ui/components/AddressMono";
 import { HashMono } from "../lib/ui/components/HashMono";
 import { Countdown } from "../lib/ui/components/Countdown";
 import { QrCode } from "../lib/ui/components/QrCode";
-import { LockOpenIcon } from "../lib/ui/components/Icon";
+import { LockOpenIcon, UndoIcon } from "../lib/ui/components/Icon";
 import { getOrCreateAccount } from "../lib/burner";
 import { useDeal } from "../lib/ui/useDeal";
 import { useSellerDeals, mergeSellerOrderRefs } from "../lib/ui/useSellerDeals";
@@ -54,6 +54,17 @@ export default function Seller() {
     }
     const item = parseItemFromText(addValue);
     trackOrder(ref, item ? { role: "seller", item } : { role: "seller" });
+    // Si este ref se había "quitado de la lista" antes (`removeOrder`), volver
+    // a agregarlo tiene que hacerlo visible de nuevo — sin esto, quedaba
+    // escondido hasta recargar la página aunque ya estuviera trackeado otra
+    // vez.
+    const key = ref.toLowerCase();
+    setHiddenRefs((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
     setAddValue("");
     setAddError(null);
     refreshList();
@@ -259,11 +270,29 @@ function SellerOrderCard({
       ) : null}
 
       {deal.state === DealState.Released ? (
-        <div className="mt-3 flex items-center justify-center gap-2 rounded-card bg-verde-3 p-3 text-hueso">
-          <LockOpenIcon size={16} className="text-terracota" />
-          <span className="text-sm font-medium">Fondos liberados</span>
-        </div>
+        <SellerResultBadge icon={<LockOpenIcon size={16} className="text-terracota" />} label="Fondos liberados" />
       ) : null}
+
+      {deal.state === DealState.Refunded ? (
+        <SellerResultBadge icon={<UndoIcon size={16} className="text-terracota" />} label="Reembolso completado" />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Resultado compacto para un desenlace terminal (`Released`/`Refunded`) en la
+ * tarjeta de vendedor — mismo look para ambos, solo cambia el ícono y el
+ * texto (ver también `TerminalReceipt` en `Order.tsx`, que muestra el mismo
+ * desenlace con un tamaño más grande para la página de estado completa; acá
+ * se necesita la versión chica, ya usada para `Released`, para no romper el
+ * ritmo de la lista de pedidos del vendedor).
+ */
+function SellerResultBadge({ icon, label }: { icon: ReactNode; label: string }) {
+  return (
+    <div className="mt-3 flex items-center justify-center gap-2 rounded-card bg-verde-3 p-3 text-hueso">
+      {icon}
+      <span className="text-sm font-medium">{label}</span>
     </div>
   );
 }

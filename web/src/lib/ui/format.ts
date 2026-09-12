@@ -116,6 +116,35 @@ export function formatUnixTime(unixSeconds: number | bigint): string {
   });
 }
 
+/**
+ * Hora local legible, con fecha si `unixSeconds` no cae en el mismo día que
+ * `nowSeconds` (p. ej. "13 sept, 22:30" en vez de solo "22:30"). Un plazo de
+ * entrega que vence otro día (no solo dentro de las próximas horas) se
+ * mostraba antes solo con la hora, sin pista de qué día era.
+ */
+export function formatDeadline(unixSeconds: number | bigint, nowSeconds: number): string {
+  const date = new Date(Number(unixSeconds) * 1000);
+  const now = new Date(nowSeconds * 1000);
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const time = date.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+  if (sameDay) return time;
+  const day = date.toLocaleDateString("es-AR", { day: "numeric", month: "short" });
+  return `${day}, ${time}`;
+}
+
+/**
+ * Termina una oración con un solo punto final, sin duplicarlo si `text` ya
+ * termina en uno (p. ej. una hora en formato 12h que el `Intl` local
+ * devuelve como "10:30 p. m.": concatenar un "." literal después daba
+ * "p. m..").
+ */
+export function endSentence(text: string): string {
+  return /\.\s*$/.test(text) ? text : `${text}.`;
+}
+
 /** Segundos Unix actuales (para countdowns). */
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);

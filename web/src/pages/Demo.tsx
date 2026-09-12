@@ -325,13 +325,12 @@ export default function Demo() {
         </p>
         <p className="mt-2 text-sm text-verde-mut">
           Pegá abajo la llave privada de <code className="tabular-mono">VITE_DEMO_SELLER</code>{" "}
-          en el dispositivo que va a actuar como <strong>vendedor de demo</strong> (necesario
+          en el dispositivo que va a actuar como <strong>vendedor de demo</strong>: la necesita
           para firmar <code className="tabular-mono">claimDelivery</code>/
-          <code className="tabular-mono">cancel</code>). Los deals para ese vendedor se arman
-          siempre desde <strong>otro dispositivo</strong> — el del comprador, en{" "}
-          <code className="tabular-mono">/comprar</code> o su propio panel de demo —: el
-          contrato no permite comprador == vendedor, así que este dispositivo nunca puede ser
-          vendedor de un deal que armó él mismo.
+          <code className="tabular-mono">cancel</code>. Los pedidos para ese vendedor siempre se
+          arman desde <strong>el dispositivo del comprador</strong> —en{" "}
+          <code className="tabular-mono">/comprar</code> o su propio panel de demo— porque el
+          contrato rechaza comprador == vendedor.
         </p>
         <p className="mt-1 text-sm font-medium text-terracota">
           Es una llave de demo en testnet, sin valor real. Nunca pegues acá una llave privada de
