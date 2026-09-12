@@ -8,6 +8,20 @@ import type { Hex } from "viem";
 const STORAGE_KEY = "kuska.burner.v1";
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
 
+/**
+ * Error tipado para una llave privada inválida al importar. Se usa en vez de
+ * dejar que `privateKeyToAccount` tire su propio error interno de viem, para
+ * dar un mensaje claro y estable en la UI (regla: nunca adivinar).
+ */
+export class InvalidPrivateKeyError extends Error {
+  constructor() {
+    super(
+      "Llave privada inválida: debe ser hex de 32 bytes con prefijo 0x (0x + 64 caracteres hexadecimales).",
+    );
+    this.name = "InvalidPrivateKeyError";
+  }
+}
+
 // Fallback en memoria: si `localStorage` no está disponible (modo privado,
 // storage bloqueado, cuota excedida, SSR), la llave burner se mantiene solo
 // en memoria de este módulo para que la sesión actual siga funcionando, en
@@ -82,19 +96,43 @@ export function getOrCreateAccount(): PrivateKeyAccount {
 }
 
 /**
+ * Importa una llave privada A MANO y la adopta como la cuenta burner de este
+ * dispositivo, persistiéndola por el mismo camino que `getOrCreateAccount`
+ * (misma `STORAGE_KEY`, mismo fallback en memoria). Pensado para la demo en
+ * vivo: el dispositivo del vendedor pega acá la llave del `VITE_DEMO_SELLER`
+ * para poder firmar `claimDelivery`/`cancel` con esa identidad — la llave
+ * privada NUNCA vive en el bundle ni en una env `VITE_*` (es pública).
+ *
+ * Valida el formato antes de usarlo; tira `InvalidPrivateKeyError` si no es
+ * un hex de 32 bytes con prefijo 0x. Igual que `getOrCreateAccount`, queda
+ * reflejada por `isPersistent()`: si `localStorage` no la pudo guardar, el
+ * front debe avisar antes de fondear con esta identidad importada.
+ */
+export function importAccount(privateKey: string): PrivateKeyAccount {
+  const trimmed = privateKey.trim();
+  if (!PRIVATE_KEY_RE.test(trimmed)) {
+    throw new InvalidPrivateKeyError();
+  }
+  const key = trimmed as Hex;
+  inMemoryKey = key;
+  inMemoryPersisted = writeStoredKey(key);
+  return privateKeyToAccount(key);
+}
+
+/**
  * ¿La llave burner actual quedó guardada en `localStorage`? `false` significa
  * que solo vive en memoria de este módulo (localStorage bloqueado/cuota/modo
  * privado): se pierde al recargar o cerrar la pestaña, así que el front debe
  * avisarlo antes de fondear la cuenta.
  *
  * No alcanza con devolver `inMemoryPersisted`: esa bandera solo se setea
- * dentro de `getAccount()`/`getOrCreateAccount()`, así que un componente que
- * llame `isPersistent()` ANTES de leer la cuenta (el caso "avisar antes de
- * fondear" de arriba) recibía siempre `false`, aunque ya hubiera una llave
- * válida en `localStorage` de una sesión anterior. Se relee `localStorage`
- * directamente y, si no hay nada ahí, se cae a la bandera en memoria (para
- * cuando la llave actual es una que se generó en esta sesión sin poder
- * persistirse).
+ * dentro de `getAccount()`/`getOrCreateAccount()`/`importAccount()`, así que
+ * un componente que llame `isPersistent()` ANTES de leer la cuenta (el caso
+ * "avisar antes de fondear" de arriba) recibía siempre `false`, aunque ya
+ * hubiera una llave válida en `localStorage` de una sesión anterior. Se
+ * relee `localStorage` directamente y, si no hay nada ahí, se cae a la
+ * bandera en memoria (para cuando la llave actual es una que se generó o
+ * importó en esta sesión sin poder persistirse).
  */
 export function isPersistent(): boolean {
   return readStoredKey() !== null || inMemoryPersisted;

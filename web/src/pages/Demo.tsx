@@ -8,9 +8,10 @@ import { Banner } from "../lib/ui/components/Banner";
 import { AddressMono } from "../lib/ui/components/AddressMono";
 import { AmountMono } from "../lib/ui/components/AmountMono";
 import { DropletIcon } from "../lib/ui/components/Icon";
-import { getAccount, getOrCreateAccount } from "../lib/burner";
+import { getAccount, getOrCreateAccount, importAccount } from "../lib/burner";
 import { getDeploymentConfig } from "../config/deployment";
 import { getPublicClient } from "../lib/ui/viemClient";
+import { kuskaEscrowAbi } from "../lib/escrow/abi";
 import { getTokenBalance } from "../lib/ui/token";
 import { getHealth, postFaucet } from "../lib/ui/relayer";
 import { createOrder } from "../lib/ui/depositFlow";
@@ -28,14 +29,25 @@ interface RoleBalance {
 }
 
 function useRoleBalances() {
-  const { tokenAddress, demoSeller } = getDeploymentConfig();
+  const { tokenAddress, demoSeller, escrowAddress } = getDeploymentConfig();
   const burner = getAccount();
 
   return useQuery({
     queryKey: ["demo-balances", burner?.address ?? null],
-    queryFn: async (): Promise<{ health: Awaited<ReturnType<typeof getHealth>>; roles: RoleBalance[] }> => {
+    queryFn: async (): Promise<{
+      health: Awaited<ReturnType<typeof getHealth>>;
+      roles: RoleBalance[];
+      arbiter: Address;
+    }> => {
       const client = getPublicClient();
-      const health = await getHealth();
+      const [health, arbiter] = await Promise.all([
+        getHealth(),
+        client.readContract({
+          address: escrowAddress,
+          abi: kuskaEscrowAbi,
+          functionName: "arbiter",
+        }),
+      ]);
 
       const targets: Array<{ label: string; address: Address }> = [
         { label: "Vendedor de demo", address: demoSeller },
@@ -52,7 +64,7 @@ function useRoleBalances() {
         }),
       );
 
-      return { health, roles };
+      return { health, roles, arbiter };
     },
     refetchInterval: 8000,
   });
@@ -68,8 +80,25 @@ export default function Demo() {
   const [demoOrders, setDemoOrders] = useState<TrackedOrder[]>(() =>
     listTrackedOrders().filter((o) => o.role === "demo"),
   );
+  const [importKeyInput, setImportKeyInput] = useState("");
+  const [importStatus, setImportStatus] = useState<"idle" | "done" | "error">("idle");
+  const [importMessage, setImportMessage] = useState<string | null>(null);
 
   const { demoSeller } = getDeploymentConfig();
+  // `sellerIsArbiter`: ¿el vendedor de demo configurado (VITE_DEMO_SELLER)
+  // es la MISMA dirección que el árbitro del contrato? Si coinciden, el
+  // árbitro terminaría siendo juez y parte — ver el comentario en
+  // `.env.example` sobre VITE_DEMO_SELLER. Verificado: el código compara
+  // arbiter vs. demoSeller y el mensaje de abajo describe exactamente esa
+  // comparación, así que código y texto ya estaban de acuerdo (no había bug
+  // en este par); se deja igual, solo documentado.
+  const sellerIsArbiter =
+    !!data?.arbiter && data.arbiter.toLowerCase() === demoSeller.toLowerCase();
+  // Este dispositivo es, hoy, la identidad del vendedor de demo: dato clave
+  // para confirmar de un vistazo antes del pitch en vivo (punto 4 del brief).
+  const localAccount = getAccount();
+  const deviceIsDemoSeller =
+    !!localAccount && localAccount.address.toLowerCase() === demoSeller.toLowerCase();
 
   async function requestFaucet() {
     setFaucetStatus("loading");
@@ -114,6 +143,19 @@ export default function Demo() {
     }
   }
 
+  function handleImportKey() {
+    setImportMessage(null);
+    try {
+      const account = importAccount(importKeyInput);
+      setImportStatus("done");
+      setImportMessage(`Identidad importada: este dispositivo ahora firma como ${account.address}.`);
+      setImportKeyInput("");
+    } catch (err) {
+      setImportStatus("error");
+      setImportMessage(err instanceof Error ? err.message : "No se pudo importar la llave.");
+    }
+  }
+
   const lowBalanceRoles = [
     ...(data?.health?.lowBalance ? ["Relayer"] : []),
     ...(data?.roles.filter((r) => r.hsk < LOW_BALANCE_WEI).map((r) => r.label) ?? []),
@@ -125,6 +167,24 @@ export default function Demo() {
       <p className="mt-1 text-sm text-verde-mut">
         Direcciones, saldos y atajos para la demo en vivo.
       </p>
+
+      {sellerIsArbiter ? (
+        <Banner kind="error" title="VITE_DEMO_SELLER = árbitro del contrato" className="mt-4">
+          El vendedor de demo configurado es la misma dirección que{" "}
+          <code className="tabular-mono">escrow.arbiter()</code>. El árbitro no puede ser también
+          el vendedor: corregí <code className="tabular-mono">VITE_DEMO_SELLER</code> en el env
+          antes de la demo.
+        </Banner>
+      ) : null}
+
+      {deviceIsDemoSeller ? (
+        <Banner kind="success" title="Este dispositivo ES el vendedor de demo" className="mt-4">
+          La cuenta local de este dispositivo coincide con{" "}
+          <code className="tabular-mono">VITE_DEMO_SELLER</code>. Puede firmar{" "}
+          <code className="tabular-mono">claimDelivery</code>/<code className="tabular-mono">cancel</code>{" "}
+          de los deals armados desde este panel.
+        </Banner>
+      ) : null}
 
       {lowBalanceRoles.length > 0 ? (
         <Banner kind="warning" title="Saldo de gas bajo" className="mt-4">
@@ -150,6 +210,46 @@ export default function Demo() {
             Todavía no tenés una cuenta local en este dispositivo. Se crea automáticamente
             en <Link to="/comprar" className="underline">Comprar</Link> o{" "}
             <Link to="/vendedor" className="underline">Vendedor</Link>.
+          </p>
+        ) : null}
+      </section>
+
+      <section className="mt-6 rounded-card bg-blanco p-4">
+        <h2 className="text-[16px] font-semibold text-verde">Identidad de este dispositivo</h2>
+        <p className="mt-1 text-sm text-verde-mut">
+          Dirección actual:{" "}
+          {localAccount ? (
+            <AddressMono address={localAccount.address} />
+          ) : (
+            <span>ninguna todavía (se crea al comprar o vender).</span>
+          )}
+        </p>
+        <p className="mt-2 text-sm text-verde-mut">
+          Para que este dispositivo actúe como el <strong>vendedor de demo</strong> (necesario
+          para firmar <code className="tabular-mono">claimDelivery</code>/
+          <code className="tabular-mono">cancel</code> de los deals armados desde acá), pegá abajo
+          la llave privada de <code className="tabular-mono">VITE_DEMO_SELLER</code>.
+        </p>
+        <p className="mt-1 text-sm font-medium text-terracota">
+          Es una llave de demo en testnet, sin valor real. Nunca pegues acá una llave privada de
+          verdad ni la de una cuenta con fondos reales.
+        </p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="password"
+            inputMode="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="0x… (64 caracteres hex)"
+            value={importKeyInput}
+            onChange={(e) => setImportKeyInput(e.target.value)}
+            className="min-h-11 flex-1 rounded-card border border-verde-mut/30 bg-blanco px-3 text-sm text-verde tabular-mono"
+          />
+          <Button onClick={handleImportKey}>Importar llave</Button>
+        </div>
+        {importMessage ? (
+          <p className={`mt-2 text-sm ${importStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
+            {importMessage}
           </p>
         ) : null}
       </section>
