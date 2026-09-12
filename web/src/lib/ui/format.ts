@@ -12,6 +12,28 @@ export function parseDemoUsd(input: string): bigint {
   return parseUnits(input, DEMO_USD_DECIMALS);
 }
 
+const AMOUNT_INPUT_RE = /^\d+(\.\d{1,6})?$/;
+
+/**
+ * Valida y convierte un monto ingresado por el usuario a unidades mínimas,
+ * con el MISMO parser (`parseUnits`) que se usa al enviar — antes la
+ * validación usaba `Number(...)` y el submit `parseUnits(...)`, dos parsers
+ * que no siempre concuerdan: `"1e3"` pasa `Number` pero `parseUnits` no
+ * acepta notación científica; `"0.0000001"` pasa `Number` pero redondea a
+ * `0n` en unidades mínimas (el contrato revierte `InvalidAmount`); `" 10 "`
+ * pasa `Number` (que recorta espacios) pero `parseUnits` no los recorta.
+ * Acá se recorta primero, se exige un decimal estricto (sin notación
+ * científica, sin más de `DEMO_USD_DECIMALS` dígitos decimales) y se exige
+ * que el resultado en unidades mínimas sea mayor a 0. Devuelve `undefined`
+ * si el input no es un monto válido.
+ */
+export function parseAmountInput(input: string): bigint | undefined {
+  const trimmed = input.trim();
+  if (!AMOUNT_INPUT_RE.test(trimmed)) return undefined;
+  const units = parseUnits(trimmed, DEMO_USD_DECIMALS);
+  return units > 0n ? units : undefined;
+}
+
 /** Formatea unidades mínimas como monto legible con 2 decimales fijos. */
 export function formatDemoUsd(amount: bigint): string {
   const full = formatUnits(amount, DEMO_USD_DECIMALS);

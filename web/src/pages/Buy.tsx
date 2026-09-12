@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { isAddress, type Address } from "viem";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { isAddress, type Address, type Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
 import { Field } from "../lib/ui/components/Field";
 import { Button } from "../lib/ui/components/Button";
@@ -9,10 +9,10 @@ import { AddressMono } from "../lib/ui/components/AddressMono";
 import { getOrCreateAccount } from "../lib/burner";
 import { isBurnerPersistent } from "../lib/ui/burnerStatus";
 import { getDeploymentConfig } from "../config/deployment";
-import { parseDemoUsd } from "../lib/ui/format";
+import { parseAmountInput } from "../lib/ui/format";
 import { createOrder } from "../lib/ui/depositFlow";
 import { trackOrder } from "../lib/ui/orderRegistry";
-import { postFaucet } from "../lib/ui/relayer";
+import { postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { DropletIcon } from "../lib/ui/components/Icon";
 
@@ -32,6 +32,12 @@ export default function Buy() {
   const [status, setStatus] = useState<Status>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  // Referencia del pedido cuando el relayer respondió con una falla que puede
+  // haber mandado (o dejado pendiente de confirmar) la transacción igual
+  // (`relayErrorMaybeSentTx`): sin esto, un timeout/`TX_REVERTED` perdía el
+  // `orderRef` para siempre y un reintento fondeaba un segundo pedido encima
+  // de fondos que podían haber quedado en custodia sin que nadie los viera.
+  const [ambiguousOrder, setAmbiguousOrder] = useState<{ ref: Hex; hash?: string } | null>(null);
 
   const [faucetStatus, setFaucetStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
@@ -40,14 +46,23 @@ export default function Buy() {
   // "Comprar" es un flujo donde crear la cuenta burner es esperado y explícito
   // (ver el docstring de `getOrCreateAccount` en lib/burner.ts).
   const buyerPreview = useMemo(() => getOrCreateAccount().address, []);
-  const sellerError = seller.length > 0 && !isAddress(seller) ? "Dirección inválida (0x + 40 hex)." : undefined;
-  const amount = Number(amountInput);
+  const sellerIsLocalAccount = isAddress(seller) && seller.toLowerCase() === buyerPreview.toLowerCase();
+  const sellerError = seller.length > 0 && !isAddress(seller)
+    ? "Dirección inválida (0x + 40 hex)."
+    : sellerIsLocalAccount
+      ? "El vendedor no puede ser esta misma cuenta: el contrato no permite comprador == vendedor. Armá el pedido desde el dispositivo del vendedor."
+      : undefined;
+  const parsedAmount = parseAmountInput(amountInput);
   const amountError =
-    amountInput.length > 0 && (!Number.isFinite(amount) || amount <= 0)
-      ? "Ingresá un monto mayor a 0."
+    amountInput.length > 0 && parsedAmount === undefined
+      ? "Ingresá un monto válido (hasta 6 decimales, mayor a 0)."
       : undefined;
 
-  const canSubmit = isAddress(seller) && !amountError && amountInput.length > 0 && status !== "signing" && status !== "relaying";
+  const canSubmit =
+    isAddress(seller) &&
+    !sellerError &&
+    parsedAmount !== undefined &&
+    (status === "idle" || status === "error");
 
   async function requestFaucet() {
     setFaucetStatus("loading");
@@ -64,14 +79,16 @@ export default function Buy() {
   }
 
   async function submit() {
-    if (!isAddress(seller)) return;
+    if (!isAddress(seller) || sellerError) return;
+    const amountUnits = parseAmountInput(amountInput);
+    if (amountUnits === undefined) return;
     setStatus("signing");
     setErrorMessage(null);
     setTxHash(null);
+    setAmbiguousOrder(null);
 
     try {
       const buyer = getOrCreateAccount();
-      const amountUnits = parseDemoUsd(amountInput);
       setStatus("relaying");
       const { orderRef, outcome } = await createOrder({
         buyer,
@@ -83,6 +100,14 @@ export default function Buy() {
       if (!outcome.ok) {
         setStatus("error");
         setErrorMessage(outcome.error.message);
+        // La falla puede haber llegado DESPUÉS de mandar la tx (p. ej. un
+        // 504 RECEIPT_TIMEOUT): sin trackear el pedido acá, el `orderRef` se
+        // perdía para siempre y un reintento fondeaba un segundo pedido
+        // encima de fondos que podían haber quedado en custodia.
+        if (relayErrorMaybeSentTx(outcome.error)) {
+          trackOrder(orderRef, { item: item || undefined, role: "buyer" });
+          setAmbiguousOrder({ ref: orderRef, hash: outcome.error.hash });
+        }
         return;
       }
 
@@ -166,7 +191,30 @@ export default function Buy() {
 
       {status === "error" && errorMessage ? (
         <Banner kind="error" title="No se pudo fondear el pedido" className="mt-4">
-          {errorMessage}
+          <p>{errorMessage}</p>
+          {ambiguousOrder ? (
+            <div className="mt-2 flex flex-col items-start gap-1">
+              <p>
+                No podemos confirmar si la transacción llegó a la cadena. Guardá esta
+                referencia y revisá el estado del pedido antes de reintentar — un
+                reintento puede fondear un segundo pedido si el primero sí se confirmó.
+              </p>
+              <p className="font-mono text-xs">{ambiguousOrder.ref}</p>
+              {ambiguousOrder.hash && txExplorerUrl(ambiguousOrder.hash) ? (
+                <a
+                  href={txExplorerUrl(ambiguousOrder.hash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  Ver la transacción en el explorer
+                </a>
+              ) : null}
+              <Link to={`/pedido/${ambiguousOrder.ref}`} className="font-medium underline">
+                Ver estado del pedido
+              </Link>
+            </div>
+          ) : null}
         </Banner>
       ) : null}
 

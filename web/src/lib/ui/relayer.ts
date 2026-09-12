@@ -69,6 +69,24 @@ const RELAY_ERROR_MESSAGES: Record<string, string> = {
 
 const DEFAULT_RELAY_MESSAGE = "La operación no se pudo completar. Intentá de nuevo.";
 
+// Códigos (docs/escrow-interface.md §6) cuya respuesta puede llegar DESPUÉS de
+// que el relayer ya mandó la transacción: `TX_REVERTED` (409, la tx minada
+// revirtió) y `RECEIPT_TIMEOUT` (504, se mandó pero no llegó a confirmarse
+// dentro del timeout — puede terminar confirmando igual). Nunca se clasifica
+// por texto del mensaje (decisión D41): siempre por el código.
+const TX_MAYBE_SENT_CODES = new Set(["TX_REVERTED", "RECEIPT_TIMEOUT"]);
+
+/**
+ * ¿Esta falla del relayer pudo haber llegado a mandar (o dejar pendiente de
+ * confirmar) una transacción on-chain? Si trae `hash`, seguro que sí. Si no,
+ * solo los dos códigos ambiguos de arriba. El resto (validación, firma
+ * inválida, simulación revertida, rate-limit, red, mal configurado) nunca
+ * llegó a `writeContract` — no hay nada que rastrear.
+ */
+export function relayErrorMaybeSentTx(error: RelayOutcomeError): boolean {
+  return error.hash !== undefined || TX_MAYBE_SENT_CODES.has(error.code);
+}
+
 function describeRelayError(body: Record<string, unknown>): string {
   const code = typeof body.code === "string" ? body.code : undefined;
   if (code === "SIMULATION_REVERTED") {
