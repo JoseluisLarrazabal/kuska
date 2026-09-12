@@ -13,7 +13,7 @@
 | viem | `hashkeyTestnet` (`viem/chains`) | `hashkey` |
 | Token | `MockUSD` (nuestro) | USDC.e `0x054ed45810DbBAb8B27668922D110669c9D88D0a` (FiatTokenV2_2, permit, 6 dec) |
 
-Solidity `^0.8.28`, OpenZeppelin Contracts v5, EVM por defecto (Cancun verificado en ambas redes).
+Solidity `^0.8.28`, OpenZeppelin Contracts v5, `evm_version = "prague"` fijado en `foundry.toml` (es el target con el que se compiló el deployment en vivo de chain 133).
 
 ## 2. `MockUSD`
 
