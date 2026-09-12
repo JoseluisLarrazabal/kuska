@@ -8,7 +8,14 @@ import { Banner } from "../lib/ui/components/Banner";
 import { AddressMono } from "../lib/ui/components/AddressMono";
 import { AmountMono } from "../lib/ui/components/AmountMono";
 import { DropletIcon } from "../lib/ui/components/Icon";
-import { getAccount, getOrCreateAccount, importAccount } from "../lib/burner";
+import {
+  getAccount,
+  getBackupAccount,
+  getOrCreateAccount,
+  importAccount,
+  previewAccountFromKey,
+  restoreBackupAccount,
+} from "../lib/burner";
 import { getDeploymentConfig } from "../config/deployment";
 import { getPublicClient } from "../lib/ui/viemClient";
 import { kuskaEscrowAbi } from "../lib/escrow/abi";
@@ -83,6 +90,10 @@ export default function Demo() {
   const [importKeyInput, setImportKeyInput] = useState("");
   const [importStatus, setImportStatus] = useState<"idle" | "done" | "error">("idle");
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  // Llave validada que espera confirmación explícita porque reemplazaría una
+  // identidad con estado (pedidos como comprador o saldo de mUSD) — ver
+  // `handleImportKey`/`doImportKey` más abajo.
+  const [pendingImportKey, setPendingImportKey] = useState<string | null>(null);
 
   const { demoSeller } = getDeploymentConfig();
   // `sellerIsArbiter`: ¿el vendedor de demo configurado (VITE_DEMO_SELLER)
@@ -99,6 +110,16 @@ export default function Demo() {
   const localAccount = getAccount();
   const deviceIsDemoSeller =
     !!localAccount && localAccount.address.toLowerCase() === demoSeller.toLowerCase();
+  const backupAccount = getBackupAccount();
+  // ¿Este dispositivo ya tiene estado como comprador (pedidos armados, o
+  // saldo de mUSD) que se quedaría sin firmante si se reemplaza la llave
+  // local ahora? Los deals de "demo" también usan la cuenta local como
+  // comprador (`armDemoDeal`), así que cuentan igual que los de "buyer".
+  const hasTrackedBuyerOrders = listTrackedOrders().some((o) => o.role === "buyer" || o.role === "demo");
+  const localMusd = localAccount
+    ? data?.roles.find((r) => r.address.toLowerCase() === localAccount.address.toLowerCase())?.musd
+    : undefined;
+  const localHasRiskyState = hasTrackedBuyerOrders || (localMusd ?? 0n) > 0n;
 
   async function requestFaucet() {
     setFaucetStatus("loading");
@@ -120,6 +141,11 @@ export default function Demo() {
   }
 
   async function armDemoDeal(kind: "normal" | "refund") {
+    // Guarda de reentrancia: dos deals armados a la vez leían el mismo nonce
+    // de permit y colisionaban (bug de doble click). `creating !== null`
+    // también deshabilita ambos botones (ver el render más abajo), esto es
+    // una segunda barrera por si el click llega antes del re-render.
+    if (creating !== null || deviceIsDemoSeller) return;
     setCreating(kind);
     setCreateError(null);
     try {
@@ -146,20 +172,59 @@ export default function Demo() {
   function handleImportKey() {
     setImportMessage(null);
     try {
-      const account = importAccount(importKeyInput);
-      setImportStatus("done");
-      setImportMessage(`Identidad importada: este dispositivo ahora firma como ${account.address}.`);
-      setImportKeyInput("");
+      const preview = previewAccountFromKey(importKeyInput);
+      const sameAsCurrent = !!localAccount && localAccount.address.toLowerCase() === preview.address.toLowerCase();
+      if (!sameAsCurrent && localHasRiskyState) {
+        // No reemplazamos todavía: este dispositivo tiene pedidos como
+        // comprador o saldo que quedarían sin firmante. Pedimos
+        // confirmación explícita antes de tocar la llave actual.
+        setPendingImportKey(importKeyInput);
+        return;
+      }
+      doImportKey(importKeyInput);
     } catch (err) {
       setImportStatus("error");
       setImportMessage(err instanceof Error ? err.message : "No se pudo importar la llave.");
     }
   }
 
-  const lowBalanceRoles = [
-    ...(data?.health?.lowBalance ? ["Relayer"] : []),
-    ...(data?.roles.filter((r) => r.hsk < LOW_BALANCE_WEI).map((r) => r.label) ?? []),
-  ];
+  function doImportKey(key: string) {
+    try {
+      const account = importAccount(key);
+      setImportStatus("done");
+      setImportMessage(
+        `Identidad importada: este dispositivo ahora firma como ${account.address}. ` +
+          "Si había una llave anterior, quedó guardada — podés restaurarla más abajo.",
+      );
+      setImportKeyInput("");
+    } catch (err) {
+      setImportStatus("error");
+      setImportMessage(err instanceof Error ? err.message : "No se pudo importar la llave.");
+    } finally {
+      setPendingImportKey(null);
+    }
+  }
+
+  function handleRestoreBackup() {
+    const restored = restoreBackupAccount();
+    if (restored) {
+      setImportStatus("done");
+      setImportMessage(`Restaurada la identidad anterior de este dispositivo: ${restored.address}.`);
+    }
+  }
+
+  // Solo el relayer manda transacciones propias en este flujo: `deposit`,
+  // `claim`/`cancel`, `release`/`dispute` y `refundExpired`/
+  // `releaseAfterWindow` pasan TODOS por `/api/relay` (docs/escrow-interface.md
+  // §6), pagados por el relayer — el vendedor de demo y la cuenta local solo
+  // firman off-chain, nunca gastan su propio gas. `resolveDispute` sí la
+  // manda el árbitro directamente (`msg.sender==arbiter`), pero esta página
+  // no muestra el saldo del árbitro como fila, así que no hay nada más que
+  // advertir acá. Antes se incluía a cualquier rol de `data.roles` con
+  // saldo bajo, lo que hacía que el banner de "saldo bajo" apareciera SIEMPRE
+  // (el vendedor/cuenta local de demo nunca necesitan HSK) y tapara la única
+  // advertencia que importa.
+  const lowBalanceRoles = data?.health?.lowBalance ? ["Relayer"] : [];
 
   return (
     <Layout>
@@ -180,9 +245,14 @@ export default function Demo() {
       {deviceIsDemoSeller ? (
         <Banner kind="success" title="Este dispositivo ES el vendedor de demo" className="mt-4">
           La cuenta local de este dispositivo coincide con{" "}
-          <code className="tabular-mono">VITE_DEMO_SELLER</code>. Puede firmar{" "}
-          <code className="tabular-mono">claimDelivery</code>/<code className="tabular-mono">cancel</code>{" "}
-          de los deals armados desde este panel.
+          <code className="tabular-mono">VITE_DEMO_SELLER</code>: puede firmar{" "}
+          <code className="tabular-mono">claimDelivery</code>/<code className="tabular-mono">cancel</code>.
+          Pero el contrato no permite comprador == vendedor, así que{" "}
+          <strong>no puede armar deals para sí mismo</strong> — los pedidos que este
+          dispositivo va a firmar como vendedor tienen que armarse desde{" "}
+          <strong>otro dispositivo</strong> (el del comprador, en{" "}
+          <code className="tabular-mono">/comprar</code> o su propio panel de demo). Por eso
+          "Armar deal" está deshabilitado más abajo en este panel.
         </Banner>
       ) : null}
 
@@ -243,14 +313,47 @@ export default function Demo() {
             placeholder="0x… (64 caracteres hex)"
             value={importKeyInput}
             onChange={(e) => setImportKeyInput(e.target.value)}
-            className="min-h-11 flex-1 rounded-card border border-verde-mut/30 bg-blanco px-3 text-sm text-verde tabular-mono"
+            disabled={pendingImportKey !== null}
+            className="min-h-11 flex-1 rounded-card border border-verde-mut/30 bg-blanco px-3 text-sm text-verde tabular-mono disabled:opacity-60"
           />
-          <Button onClick={handleImportKey}>Importar llave</Button>
+          <Button onClick={handleImportKey} disabled={pendingImportKey !== null || importKeyInput.trim().length === 0}>
+            Importar llave
+          </Button>
         </div>
         {importMessage ? (
           <p className={`mt-2 text-sm ${importStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
             {importMessage}
           </p>
+        ) : null}
+
+        {pendingImportKey ? (
+          <Banner kind="warning" title="Esto va a reemplazar la identidad de este dispositivo" className="mt-3">
+            <p>
+              Este dispositivo ya tiene pedidos armados como comprador y/o saldo de mUSD
+              con la cuenta actual. Importar la nueva llave la reemplaza: la cuenta actual
+              queda guardada como backup (podés restaurarla después), pero mientras tanto
+              este dispositivo deja de poder firmar como comprador para esos pedidos.
+            </p>
+            <div className="mt-2 flex gap-2">
+              <Button variant="danger" onClick={() => doImportKey(pendingImportKey)}>
+                Sí, reemplazar
+              </Button>
+              <Button variant="secondary" onClick={() => setPendingImportKey(null)}>
+                Cancelar
+              </Button>
+            </div>
+          </Banner>
+        ) : null}
+
+        {backupAccount ? (
+          <div className="mt-3 flex flex-col items-start gap-2 rounded-card bg-verde/5 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-verde-mut">
+              Llave anterior de este dispositivo guardada: <AddressMono address={backupAccount.address} />
+            </span>
+            <Button variant="secondary" onClick={handleRestoreBackup}>
+              Restaurar la llave anterior
+            </Button>
+          </div>
         ) : null}
       </section>
 
@@ -294,11 +397,27 @@ export default function Demo() {
         <p className="mt-1 text-sm text-verde-mut">
           Fondea automáticamente con tu cuenta local como comprador y el vendedor de demo.
         </p>
+        {deviceIsDemoSeller ? (
+          <Banner kind="warning" className="mt-3">
+            Este dispositivo es el vendedor de demo: no puede armar deals para sí mismo (el
+            contrato rechaza comprador == vendedor). Armá el deal desde el dispositivo
+            comprador.
+          </Banner>
+        ) : null}
         <div className="mt-3 flex flex-col gap-2">
-          <Button busy={creating === "normal"} onClick={() => armDemoDeal("normal")}>
+          <Button
+            busy={creating === "normal"}
+            disabled={creating !== null || deviceIsDemoSeller}
+            onClick={() => armDemoDeal("normal")}
+          >
             Armar deal normal (30 min de entrega)
           </Button>
-          <Button variant="secondary" busy={creating === "refund"} onClick={() => armDemoDeal("refund")}>
+          <Button
+            variant="secondary"
+            busy={creating === "refund"}
+            disabled={creating !== null || deviceIsDemoSeller}
+            onClick={() => armDemoDeal("refund")}
+          >
             Armar deal de reembolso (vence en 2 min)
           </Button>
         </div>

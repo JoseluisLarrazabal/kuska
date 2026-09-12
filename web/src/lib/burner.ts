@@ -6,6 +6,7 @@ import {
 import type { Hex } from "viem";
 
 const STORAGE_KEY = "kuska.burner.v1";
+const BACKUP_STORAGE_KEY = "kuska.burner.backup.v1";
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
 
 /**
@@ -32,6 +33,12 @@ export class InvalidPrivateKeyError extends Error {
 let inMemoryKey: Hex | null = null;
 let inMemoryPersisted = false;
 
+// Mismo patrón de storage + fallback en memoria que la llave principal, pero
+// para el slot de backup (ver `importAccount`): guarda la llave que este
+// dispositivo tenía ANTES de un `importAccount` que la reemplazó, para poder
+// ofrecer "Restaurar la llave anterior" sin haberla perdido.
+let inMemoryBackupKey: Hex | null = null;
+
 function readStoredKey(): Hex | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -53,6 +60,35 @@ function writeStoredKey(key: Hex): boolean {
     // (ver fallback en memoria arriba)
     return false;
   }
+}
+
+function readBackupKey(): Hex | null {
+  try {
+    const raw = window.localStorage.getItem(BACKUP_STORAGE_KEY);
+    if (!raw || !PRIVATE_KEY_RE.test(raw)) return null;
+    return raw as Hex;
+  } catch {
+    return null;
+  }
+}
+
+/** Intenta persistir `key` en el slot de backup; igual fallback en memoria que la llave principal si `localStorage` tira. */
+function writeBackupKey(key: Hex): void {
+  inMemoryBackupKey = key;
+  try {
+    window.localStorage.setItem(BACKUP_STORAGE_KEY, key);
+  } catch {
+    // se mantiene en memoria (arriba) para esta sesión
+  }
+}
+
+function clearBackupKey(): void {
+  try {
+    window.localStorage.removeItem(BACKUP_STORAGE_KEY);
+  } catch {
+    // no-op
+  }
+  inMemoryBackupKey = null;
 }
 
 /**
@@ -96,12 +132,35 @@ export function getOrCreateAccount(): PrivateKeyAccount {
 }
 
 /**
+ * Valida el formato de una llave privada y devuelve la cuenta que resultaría
+ * de importarla, SIN persistirla ni reemplazar la cuenta actual. Pensado
+ * para previsualizar (mostrar la dirección resultante, detectar si ya es la
+ * cuenta actual, decidir si hace falta confirmar un reemplazo destructivo)
+ * antes de llamar a `importAccount`. Tira `InvalidPrivateKeyError` con el
+ * mismo criterio que `importAccount`.
+ */
+export function previewAccountFromKey(privateKey: string): PrivateKeyAccount {
+  const trimmed = privateKey.trim();
+  if (!PRIVATE_KEY_RE.test(trimmed)) {
+    throw new InvalidPrivateKeyError();
+  }
+  return privateKeyToAccount(trimmed as Hex);
+}
+
+/**
  * Importa una llave privada A MANO y la adopta como la cuenta burner de este
  * dispositivo, persistiéndola por el mismo camino que `getOrCreateAccount`
  * (misma `STORAGE_KEY`, mismo fallback en memoria). Pensado para la demo en
  * vivo: el dispositivo del vendedor pega acá la llave del `VITE_DEMO_SELLER`
  * para poder firmar `claimDelivery`/`cancel` con esa identidad — la llave
  * privada NUNCA vive en el bundle ni en una env `VITE_*` (es pública).
+ *
+ * Si ya había una cuenta distinta en este dispositivo, esa llave anterior se
+ * guarda primero en un slot de backup (`getBackupAccount`/
+ * `restoreBackupAccount`) en vez de perderse: sin esto, importar la llave del
+ * vendedor de demo sobre un dispositivo que ya venía usándose como comprador
+ * dejaba sin firmante a los pedidos armados desde ahí, con su mUSD
+ * inalcanzable.
  *
  * Valida el formato antes de usarlo; tira `InvalidPrivateKeyError` si no es
  * un hex de 32 bytes con prefijo 0x. Igual que `getOrCreateAccount`, queda
@@ -114,9 +173,42 @@ export function importAccount(privateKey: string): PrivateKeyAccount {
     throw new InvalidPrivateKeyError();
   }
   const key = trimmed as Hex;
+
+  const existingKey = readStoredKey() ?? inMemoryKey;
+  if (existingKey && existingKey.toLowerCase() !== key.toLowerCase()) {
+    writeBackupKey(existingKey);
+  }
+
   inMemoryKey = key;
   inMemoryPersisted = writeStoredKey(key);
   return privateKeyToAccount(key);
+}
+
+/**
+ * Cuenta guardada en el slot de backup (la que este dispositivo tenía antes
+ * del último `importAccount` que la reemplazó por una distinta), o `null` si
+ * no hay ninguna. Para mostrar "Restaurar la llave anterior" sin exponer la
+ * llave privada.
+ */
+export function getBackupAccount(): PrivateKeyAccount | null {
+  const stored = readBackupKey();
+  if (stored) return privateKeyToAccount(stored);
+  if (inMemoryBackupKey) return privateKeyToAccount(inMemoryBackupKey);
+  return null;
+}
+
+/**
+ * Restaura la cuenta del slot de backup como la cuenta activa de este
+ * dispositivo y limpia el backup (un solo nivel: no hay pila de backups).
+ * Devuelve `null` sin hacer nada si no había ninguna backup guardada.
+ */
+export function restoreBackupAccount(): PrivateKeyAccount | null {
+  const backup = readBackupKey() ?? inMemoryBackupKey;
+  if (!backup) return null;
+  inMemoryKey = backup;
+  inMemoryPersisted = writeStoredKey(backup);
+  clearBackupKey();
+  return privateKeyToAccount(backup);
 }
 
 /**
@@ -138,7 +230,7 @@ export function isPersistent(): boolean {
   return readStoredKey() !== null || inMemoryPersisted;
 }
 
-/** Borra la cuenta burner persistida (p. ej. para "olvidar" la demo). */
+/** Borra la cuenta burner persistida y su backup (p. ej. para "olvidar" la demo). */
 export function clearAccount(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
@@ -147,4 +239,5 @@ export function clearAccount(): void {
   }
   inMemoryKey = null;
   inMemoryPersisted = false;
+  clearBackupKey();
 }

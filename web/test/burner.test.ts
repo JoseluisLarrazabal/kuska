@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { clearAccount, getAccount, importAccount, InvalidPrivateKeyError } from "../src/lib/burner";
+import {
+  clearAccount,
+  getAccount,
+  getBackupAccount,
+  importAccount,
+  InvalidPrivateKeyError,
+  previewAccountFromKey,
+  restoreBackupAccount,
+} from "../src/lib/burner";
 
-// Llave descartable generada al vuelo para el test (nunca una llave real ni
-// un literal hardcodeado en el repo).
+// Llaves descartables generadas al vuelo para el test (nunca una llave real
+// ni un literal hardcodeado en el repo).
 const TEST_PRIVATE_KEY = generatePrivateKey();
+const OTHER_PRIVATE_KEY = generatePrivateKey();
 
 /** `localStorage` en memoria, para simular un dispositivo que sí persiste. */
 function createFakeLocalStorage() {
@@ -88,5 +97,102 @@ describe("importAccount", () => {
     // `getAccount()` también pasa por el mismo fallback en memoria, aunque
     // `localStorage.getItem` tire.
     expect(getAccount()?.address).toBe(account.address);
+  });
+});
+
+describe("previewAccountFromKey", () => {
+  beforeEach(() => {
+    clearAccount();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("devuelve la cuenta sin persistir nada", () => {
+    // Sin `window` disponible (entorno node de vitest): si intentara tocar
+    // storage, tiraría. No debería.
+    const preview = previewAccountFromKey(TEST_PRIVATE_KEY);
+    expect(preview.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    expect(getAccount()).toBeNull();
+  });
+
+  it("rechaza una llave inválida con InvalidPrivateKeyError", () => {
+    expect(() => previewAccountFromKey("0x1234")).toThrow(InvalidPrivateKeyError);
+  });
+});
+
+describe("importAccount — backup de la llave anterior", () => {
+  beforeEach(() => {
+    clearAccount();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("no hay backup antes de importar nada", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+    expect(getBackupAccount()).toBeNull();
+  });
+
+  it("al importar una llave distinta, la anterior queda en el slot de backup", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+
+    importAccount(TEST_PRIVATE_KEY);
+    expect(getBackupAccount()).toBeNull(); // todavía no había nada que respaldar
+
+    importAccount(OTHER_PRIVATE_KEY);
+
+    // La cuenta activa ahora es la nueva…
+    expect(getAccount()?.address).toBe(privateKeyToAccount(OTHER_PRIVATE_KEY).address);
+    // …y la anterior quedó respaldada, no perdida.
+    expect(getBackupAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+  });
+
+  it("importar la MISMA llave (mismo address) no crea un backup", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+
+    importAccount(TEST_PRIVATE_KEY);
+    importAccount(TEST_PRIVATE_KEY.toUpperCase().replace("0X", "0x") as `0x${string}`);
+
+    expect(getBackupAccount()).toBeNull();
+  });
+
+  it("restoreBackupAccount() restaura la identidad anterior y vacía el backup", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+
+    importAccount(TEST_PRIVATE_KEY);
+    importAccount(OTHER_PRIVATE_KEY);
+    expect(getAccount()?.address).toBe(privateKeyToAccount(OTHER_PRIVATE_KEY).address);
+
+    const restored = restoreBackupAccount();
+
+    expect(restored?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    expect(getAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    expect(getBackupAccount()).toBeNull(); // un solo nivel: no queda pila de backups
+  });
+
+  it("restoreBackupAccount() no hace nada y devuelve null si no hay backup", () => {
+    vi.stubGlobal("window", { localStorage: createFakeLocalStorage() });
+
+    importAccount(TEST_PRIVATE_KEY);
+    const restored = restoreBackupAccount();
+
+    expect(restored).toBeNull();
+    expect(getAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+  });
+
+  it("si localStorage tira, el backup igual queda disponible en memoria para esta sesión", () => {
+    vi.stubGlobal("window", { localStorage: createThrowingLocalStorage() });
+
+    importAccount(TEST_PRIVATE_KEY);
+    importAccount(OTHER_PRIVATE_KEY);
+
+    expect(getBackupAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+
+    const restored = restoreBackupAccount();
+    expect(restored?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
+    expect(getAccount()?.address).toBe(privateKeyToAccount(TEST_PRIVATE_KEY).address);
   });
 });
