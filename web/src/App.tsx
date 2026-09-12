@@ -1,39 +1,36 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
+import Landing from "./pages/Landing";
+import Buy from "./pages/Buy";
+import Order from "./pages/Order";
+import Deliver from "./pages/Deliver";
+import Seller from "./pages/Seller";
+import Demo from "./pages/Demo";
 
-// Pantallas reales: carril B2. Estas son rutas placeholder mínimas.
-function Home() {
-  return <h1>Kuska</h1>;
-}
-
-function Comprar() {
-  return <h1>Comprar</h1>;
-}
-
-function Pedido() {
-  return <h1>Pedido</h1>;
-}
-
-function Entregar() {
-  return <h1>Entregar</h1>;
-}
-
-function Vendedor() {
-  return <h1>Vendedor</h1>;
-}
-
-function Demo() {
-  return <h1>Demo</h1>;
-}
+// Import perezoso: en build de producción (`import.meta.env.DEV` falso) el
+// bundle de `Preview.tsx` queda en su propio chunk y nunca se referencia
+// desde la ruta real, así que Vite lo separa del bundle principal.
+const Preview = lazy(() => import("./pages/Preview"));
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/comprar" element={<Comprar />} />
-      <Route path="/pedido/:ref" element={<Pedido />} />
-      <Route path="/entregar" element={<Entregar />} />
-      <Route path="/vendedor" element={<Vendedor />} />
+      <Route path="/" element={<Landing />} />
+      <Route path="/comprar" element={<Buy />} />
+      <Route path="/pedido/:ref" element={<Order />} />
+      <Route path="/entregar" element={<Deliver />} />
+      <Route path="/vendedor" element={<Seller />} />
       <Route path="/demo" element={<Demo />} />
+      {import.meta.env.DEV ? (
+        <Route
+          path="/_preview"
+          element={
+            <Suspense fallback={null}>
+              <Preview />
+            </Suspense>
+          }
+        />
+      ) : null}
     </Routes>
   );
 }

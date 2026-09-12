@@ -1,1 +1,80 @@
 @import "tailwindcss";
+
+/* Tokens de marca — fuente de verdad: docs/brand.md (rama main). */
+@theme {
+  --color-verde: #1c3f35;
+  --color-verde-2: #2c5647;
+  --color-verde-3: #12241f;
+  --color-hueso: #f2e9d8;
+  --color-verde-mut: #55665f;
+  --color-terracota: #c1440e;
+  --color-terracota-tint: #fbd9c8;
+  --color-blanco: #ffffff;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --radius-field: 8px;
+  --radius-card: 16px;
+  --radius-panel: 28px;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-hueso);
+    color: var(--color-verde);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-terracota);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: var(--color-terracota-tint);
+    color: var(--color-verde);
+  }
+}
+
+@layer utilities {
+  .tabular-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Amplía el área táctil a >=44px sin cambiar el tamaño visual (íconos y
+     links inline chicos): el pseudo-elemento absoluto no afecta el layout. */
+  .tap-target {
+    position: relative;
+  }
+  .tap-target::before {
+    content: "";
+    position: absolute;
+    inset: -10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
