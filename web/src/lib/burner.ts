@@ -86,9 +86,18 @@ export function getOrCreateAccount(): PrivateKeyAccount {
  * que solo vive en memoria de este módulo (localStorage bloqueado/cuota/modo
  * privado): se pierde al recargar o cerrar la pestaña, así que el front debe
  * avisarlo antes de fondear la cuenta.
+ *
+ * No alcanza con devolver `inMemoryPersisted`: esa bandera solo se setea
+ * dentro de `getAccount()`/`getOrCreateAccount()`, así que un componente que
+ * llame `isPersistent()` ANTES de leer la cuenta (el caso "avisar antes de
+ * fondear" de arriba) recibía siempre `false`, aunque ya hubiera una llave
+ * válida en `localStorage` de una sesión anterior. Se relee `localStorage`
+ * directamente y, si no hay nada ahí, se cae a la bandera en memoria (para
+ * cuando la llave actual es una que se generó en esta sesión sin poder
+ * persistirse).
  */
 export function isPersistent(): boolean {
-  return inMemoryPersisted;
+  return readStoredKey() !== null || inMemoryPersisted;
 }
 
 /** Borra la cuenta burner persistida (p. ej. para "olvidar" la demo). */

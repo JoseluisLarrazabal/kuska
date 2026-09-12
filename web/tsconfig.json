@@ -24,5 +24,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "server", "api", "vite.config.ts"]
+  "include": ["src", "server", "api", "test", "vite.config.ts", "vitest.config.ts"]
 }

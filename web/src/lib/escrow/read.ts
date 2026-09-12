@@ -53,14 +53,20 @@ export async function getDeal(
     args: [orderRef],
   });
 
-  const state = deal.state as DealState;
+  // `deal.state` es un `uint8` tal cual viene de la cadena: un estado fuera
+  // de 0-5 (contrato desactualizado, red equivocada, etc.) no está en
+  // `dealStateLabels` y el cast `as DealState` no lo detecta en runtime.
+  // Validar el rango explícitamente en vez de confiar en el cast, para que
+  // `stateLabel` siga siendo siempre un `string` como promete `Deal`.
+  const rawState = deal.state as number;
+  const state = rawState in DealState ? (rawState as DealState) : undefined;
   return {
     buyer: deal.buyer,
     amount: deal.amount,
     seller: deal.seller,
     deliveryDeadline: deal.deliveryDeadline,
     claimedAt: deal.claimedAt,
-    state,
-    stateLabel: dealStateLabels[state],
+    state: state ?? (rawState as DealState),
+    stateLabel: state !== undefined ? dealStateLabels[state] : `Desconocido (${rawState})`,
   };
 }

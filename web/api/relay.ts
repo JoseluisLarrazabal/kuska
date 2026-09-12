@@ -21,8 +21,20 @@ export default async function handler(request: Request): Promise<Response> {
     return Response.json({ code: "INVALID_REQUEST" }, { status: 400 });
   }
 
-  const serverConfig = getServerConfig();
-  const { publicClient, walletClient } = getRelayerClients();
+  // `getServerConfig`/`getRelayerClients` tiran un `Error` pelado si falta o
+  // es inválida una env var del servidor (p. ej. `RELAYER_PRIVATE_KEY`). Sin
+  // este try/catch, en Vercel eso es un 500 `FUNCTION_INVOCATION_FAILED` sin
+  // cuerpo JSON, no el `503 MISCONFIGURED` documentado (docs/escrow-interface.md §6).
+  let serverConfig: ReturnType<typeof getServerConfig>;
+  let clients: ReturnType<typeof getRelayerClients>;
+  try {
+    serverConfig = getServerConfig();
+    clients = getRelayerClients();
+  } catch (err) {
+    console.error("[kuska] /api/relay: configuración del servidor inválida:", err);
+    return Response.json({ code: "MISCONFIGURED" }, { status: 503 });
+  }
+  const { publicClient, walletClient } = clients;
 
   const deps: RelayDeps = {
     publicClient,

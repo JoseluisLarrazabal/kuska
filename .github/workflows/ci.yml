@@ -25,14 +25,34 @@ jobs:
 
   contracts:
     runs-on: ubuntu-latest
-    if: hashFiles('contracts/foundry.toml') != ''
-    defaults:
-      run:
-        working-directory: contracts
+    # SIN `defaults.run.working-directory` acá: mientras `contracts/` no
+    # exista (antes de mergear feat/contracts), un `run:` con
+    # working-directory fijo fallaría al no poder ni hacer `cd`. El check de
+    # existencia y los steps de forge fijan `working-directory: contracts`
+    # cada uno donde corresponde.
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # `hashFiles` a nivel de JOB se evalúa ANTES de cualquier checkout,
+      # contra un GITHUB_WORKSPACE vacío: siempre da '' y el job quedaría
+      # "skipped" para siempre, incluso una vez que `contracts/foundry.toml`
+      # exista de verdad (feat/contracts). Movido a un step, después del
+      # checkout, para que se evalúe contra el árbol real.
+      - id: check
+        run: |
+          if [ -f contracts/foundry.toml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: foundry-rs/foundry-toolchain@v1
-      - run: forge build
-      - run: forge test
+        if: steps.check.outputs.exists == 'true'
+      - name: forge build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: contracts
+        run: forge build
+      - name: forge test
+        if: steps.check.outputs.exists == 'true'
+        working-directory: contracts
+        run: forge test

@@ -17,6 +17,14 @@ export interface FaucetDeps {
   chainId: number;
   /** default 20_000 ms (docs §6) */
   receiptTimeoutMs?: number;
+  /**
+   * Piso de saldo del relayer en wei antes de mandar CUALQUIER tx del
+   * faucet. Default 0.02 HSK (20_000_000_000_000_000n wei), coherente con
+   * `lowBalance` de `health.ts`. Las llaves de rol de esta demo tienen 0.1
+   * HSK cada una: un faucet sin freno de saldo puede vaciarla en pocas
+   * llamadas.
+   */
+  minRelayerBalanceWei?: bigint;
 }
 
 export type FaucetResponse =
@@ -24,13 +32,75 @@ export type FaucetResponse =
   | { status: 400; body: { code: "INVALID_REQUEST" } }
   | { status: 404; body: { code: "NOT_FOUND" } }
   | { status: 409; body: { code: "FAUCET_COOLDOWN"; availableAt: string } }
+  | { status: 409; body: { code: "SIMULATION_REVERTED"; reason: string } }
   | { status: 409; body: { code: "TX_REVERTED"; hash: Hex } }
+  | { status: 429; body: { code: "RATE_LIMITED"; retryAfter: number } }
   | { status: 502; body: { code: "RPC_ERROR" } }
   | { status: 503; body: { code: "MISCONFIGURED" } }
+  | { status: 503; body: { code: "RELAYER_LOW_BALANCE" } }
   | { status: 504; body: { code: "RECEIPT_TIMEOUT"; hash: Hex } };
 
-/** `POST /api/faucet` (docs/escrow-interface.md §6). */
-export async function handleFaucet(body: unknown, deps: FaucetDeps): Promise<FaucetResponse> {
+/** 0.02 HSK — mismo umbral que `lowBalance` en health.ts (docs/escrow-interface.md §6). */
+const DEFAULT_MIN_RELAYER_BALANCE_WEI = 20_000_000_000_000_000n;
+
+// ---------------------------------------------------------------------------
+// Rate limit por IP, en memoria de proceso, ventana deslizante. Único freno
+// disponible sin dependencias externas ni estado compartido: el freno real
+// (cooldown de `MockUSD`) es por DIRECCIÓN destino, así que un atacante con
+// direcciones frescas ilimitadas lo esquiva sin límite y le hace gastar gas
+// al relayer (0.1 HSK de saldo) en cada request.
+//
+// OJO — esto es mitigación best-effort, NO una garantía: en serverless
+// (Vercel) cada instancia fría tiene su propio `Map` en memoria, así que un
+// atacante que golpee varias instancias concurrentes (o que se beneficie de
+// reinicios de instancia) puede superar el límite nominal. La garantía real
+// requeriría estado compartido entre instancias (p. ej. Upstash Redis), que
+// queda fuera de alcance para esta demo. Esto igual sube considerablemente
+// el costo de un ataque trivial de "una IP, muchas direcciones nuevas".
+// ---------------------------------------------------------------------------
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
+const RATE_LIMIT_MAX_REQUESTS = 3; // por IP, por ventana
+
+const requestTimestampsByIp = new Map<string, number[]>();
+
+function checkRateLimit(
+  ip: string,
+  now: number = Date.now(),
+): { limited: boolean; retryAfterSeconds: number } {
+  const recent = (requestTimestampsByIp.get(ip) ?? []).filter(
+    (t) => now - t < RATE_LIMIT_WINDOW_MS,
+  );
+
+  if (recent.length >= RATE_LIMIT_MAX_REQUESTS) {
+    requestTimestampsByIp.set(ip, recent);
+    const oldest = recent[0] ?? now;
+    const retryAfterMs = RATE_LIMIT_WINDOW_MS - (now - oldest);
+    return { limited: true, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
+  }
+
+  recent.push(now);
+  requestTimestampsByIp.set(ip, recent);
+  return { limited: false, retryAfterSeconds: 0 };
+}
+
+/** Solo para tests: limpia el rate limiter del faucet en memoria. */
+export function resetFaucetRateLimiter(): void {
+  requestTimestampsByIp.clear();
+}
+
+/**
+ * `POST /api/faucet` (docs/escrow-interface.md §6).
+ *
+ * `clientIp` se recibe como parámetro (nunca se lee de headers acá): lo
+ * resuelve el borde HTTP (`web/api/faucet.ts` con `getClientIp`, o
+ * `web/server/devServer.ts` en dev) para que este handler siga siendo puro y
+ * testeable sin construir un `Request` real.
+ */
+export async function handleFaucet(
+  body: unknown,
+  deps: FaucetDeps,
+  clientIp: string,
+): Promise<FaucetResponse> {
   if (deps.chainId === 177) {
     return { status: 404, body: { code: "NOT_FOUND" } };
   }
@@ -40,6 +110,25 @@ export async function handleFaucet(body: unknown, deps: FaucetDeps): Promise<Fau
     return { status: 400, body: { code: "INVALID_REQUEST" } };
   }
   const to = parsed.data.to as Address;
+
+  const rateLimit = checkRateLimit(clientIp);
+  if (rateLimit.limited) {
+    return {
+      status: 429,
+      body: { code: "RATE_LIMITED", retryAfter: rateLimit.retryAfterSeconds },
+    };
+  }
+
+  // piso de saldo del relayer: con 0.1 HSK de saldo total en la llave del
+  // relayer, mandar una tx que sabemos que no se puede pagar (o que deja al
+  // relayer sin margen para el resto de la demo) es peor que rechazarla acá.
+  const minBalance = deps.minRelayerBalanceWei ?? DEFAULT_MIN_RELAYER_BALANCE_WEI;
+  const relayerBalance = await deps.publicClient.getBalance({
+    address: deps.relayerAccount.address,
+  });
+  if (relayerBalance < minBalance) {
+    return { status: 503, body: { code: "RELAYER_LOW_BALANCE" } };
+  }
 
   // la dirección del token debe ser realmente un contrato (memoizado por
   // proceso) antes de mandar ninguna transacción — ver contractGuard.ts. El
@@ -68,6 +157,13 @@ export async function handleFaucet(body: unknown, deps: FaucetDeps): Promise<Fau
         status: 409,
         body: { code: "FAUCET_COOLDOWN", availableAt: String(availableAt ?? "0") },
       };
+    }
+    // cualquier OTRO revert de simulación (token pausado, un custom error
+    // renombrado, `faucet()` inexistente, etc.) se reporta con su nombre real
+    // en vez de aplanarse a un genérico 502 RPC_ERROR — igual que `relay.ts`.
+    if (reverted) {
+      const reason = reverted.data?.errorName ?? reverted.reason ?? "UNKNOWN";
+      return { status: 409, body: { code: "SIMULATION_REVERTED", reason } };
     }
     return { status: 502, body: { code: "RPC_ERROR" } };
   }

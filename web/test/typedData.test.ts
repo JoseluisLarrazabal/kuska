@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPublicClient, http } from "viem";
-import { verifyTypedData } from "viem/actions";
-import { hashkeyTestnet } from "viem/chains";
+import { verifyTypedData } from "viem/utils";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   buildCancel,
@@ -23,11 +21,15 @@ const TOKEN_ADDRESS = "0x2222222222222222222222222222222222222222" as const;
 const ORDER_REF = ("0x" + "aa".repeat(32)) as `0x${string}`;
 const CHAIN_ID = 133;
 
-// Cliente de solo lectura: `verifyTypedData` primero intenta recuperar la
-// dirección localmente (sin red); solo golpearía el RPC en un fallback
-// ERC-1271, que estas firmas EOA nunca disparan.
-const client = createPublicClient({ chain: hashkeyTestnet, transport: http() });
-
+// `verifyTypedData` de `viem/utils` (NO la de `publicClient`/`viem/actions`)
+// es una función pura: solo hace recuperación ECDSA local (`recoverTypedDataAddress`),
+// sin cliente ni transport. La versión de cliente, con el `mode` default
+// `'auto'`, intenta PRIMERO un `eth_call` deployless de ERC-6492 y recién cae
+// a la recuperación local en el catch — así que estos tests, con un cliente
+// apuntando al RPC público de HSK testnet, hacían una llamada de red real en
+// cada uno de los 7 casos. Como estas firmas son siempre EOA (nunca
+// ERC-1271/smart account), no hace falta esa ruta: la versión pura alcanza y
+// no toca la red, así que la CI no puede fallar por un RPC público lento.
 describe("typedData builders", () => {
   const account = privateKeyToAccount(TEST_PRIVATE_KEY);
 
@@ -42,7 +44,7 @@ describe("typedData builders", () => {
       authDeadline: 1_893_456_000n,
     });
     const signature = await account.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,
@@ -58,7 +60,7 @@ describe("typedData builders", () => {
       sigDeadline: 1_893_456_000n,
     });
     const signature = await account.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,
@@ -74,7 +76,7 @@ describe("typedData builders", () => {
       sigDeadline: 1_893_456_000n,
     });
     const signature = await account.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,
@@ -90,7 +92,7 @@ describe("typedData builders", () => {
       sigDeadline: 1_893_456_000n,
     });
     const signature = await account.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,
@@ -106,7 +108,7 @@ describe("typedData builders", () => {
       sigDeadline: 1_893_456_000n,
     });
     const signature = await account.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,
@@ -129,7 +131,7 @@ describe("typedData builders", () => {
       deadline: 1_893_456_000n,
     });
     const signature = await account.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,
@@ -146,7 +148,7 @@ describe("typedData builders", () => {
       sigDeadline: 1_893_456_000n,
     });
     const signature = await other.signTypedData(typedData);
-    const valid = await verifyTypedData(client, {
+    const valid = await verifyTypedData({
       address: account.address,
       ...typedData,
       signature,

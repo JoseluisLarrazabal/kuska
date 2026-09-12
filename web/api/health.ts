@@ -11,8 +11,19 @@ export default async function handler(request: Request): Promise<Response> {
     return Response.json({ code: "INVALID_REQUEST" }, { status: 405 });
   }
 
-  const serverConfig = getServerConfig();
-  const { publicClient } = getRelayerClients();
+  // `getServerConfig`/`getRelayerClients` tiran un `Error` pelado si falta o
+  // es inválida una env var del servidor. Sin este try/catch, en Vercel eso
+  // es un 500 `FUNCTION_INVOCATION_FAILED`, no el `503 MISCONFIGURED`
+  // documentado (docs/escrow-interface.md §6).
+  let serverConfig: ReturnType<typeof getServerConfig>;
+  let publicClient: ReturnType<typeof getRelayerClients>["publicClient"];
+  try {
+    serverConfig = getServerConfig();
+    ({ publicClient } = getRelayerClients());
+  } catch (err) {
+    console.error("[kuska] /api/health: configuración del servidor inválida:", err);
+    return Response.json({ code: "MISCONFIGURED" }, { status: 503 });
+  }
 
   const result = await handleHealth({
     publicClient,

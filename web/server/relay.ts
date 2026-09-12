@@ -39,32 +39,49 @@ const hexSignature = z
 const permitSignature = z
   .string()
   .regex(/^0x[0-9a-fA-F]{130}$/, "firma de permit inválida (esperado 65 bytes)");
-const decimalString = z
-  .string()
-  .regex(/^\d+$/, "debe ser un entero decimal en formato string")
-  .transform((v) => BigInt(v));
+// `decimalString` genérico (sin cota) permitía, p. ej., un `deliveryDeadline`
+// (uint64 en la firma ABI de `depositWithPermit`) mayor que
+// `type(uint64).max`: el schema lo aceptaba, pero `simulateContract` tira
+// `IntegerOutOfRangeError` al codificar el calldata (no un revert de
+// contrato), `findRevertedError` devuelve `undefined`, y un input malo del
+// cliente terminaba como `502 RPC_ERROR` en vez de `400`. Cada campo numérico
+// se acota ahora a su rango real según el tipo Solidity del parámetro ABI
+// correspondiente (ver src/lib/escrow/abi.ts).
+const UINT64_MAX = (1n << 64n) - 1n;
+const UINT256_MAX = (1n << 256n) - 1n;
+
+function boundedDecimalString(max: bigint, typeLabel: string) {
+  return z
+    .string()
+    .regex(/^\d+$/, "debe ser un entero decimal en formato string")
+    .transform((v) => BigInt(v))
+    .refine((v) => v <= max, `excede el máximo permitido para ${typeLabel}`);
+}
+
+const decimalStringUint64 = boundedDecimalString(UINT64_MAX, "uint64");
+const decimalStringUint256 = boundedDecimalString(UINT256_MAX, "uint256");
 
 const depositParamsSchema = z.object({
   orderRef: hexBytes32,
   buyer: hexAddress,
   seller: hexAddress,
-  amount: decimalString,
-  deliveryDeadline: decimalString,
-  authDeadline: decimalString,
+  amount: decimalStringUint256,
+  deliveryDeadline: decimalStringUint64,
+  authDeadline: decimalStringUint256,
   authSig: hexSignature,
-  permitDeadline: decimalString,
+  permitDeadline: decimalStringUint256,
   permitSig: permitSignature,
 });
 
 const sellerActionParamsSchema = z.object({
   orderRef: hexBytes32,
-  sigDeadline: decimalString,
+  sigDeadline: decimalStringUint256,
   sellerSig: hexSignature,
 });
 
 const buyerActionParamsSchema = z.object({
   orderRef: hexBytes32,
-  sigDeadline: decimalString,
+  sigDeadline: decimalStringUint256,
   buyerSig: hexSignature,
 });
 
@@ -96,7 +113,11 @@ export interface RelayDeps {
   chainId: number;
   /** default 20_000 ms (docs §6) */
   receiptTimeoutMs?: number;
-  /** default 2 (docs §6) */
+  /**
+   * Cuántas veces reintentar `writeContract` ante un error de nonce, DESPUÉS
+   * del intento inicial (no intentos totales). Default 2 (docs §6) → hasta 3
+   * llamadas a `writeContract` en total (1 intento inicial + 2 reintentos).
+   */
   maxNonceRetries?: number;
 }
 
@@ -272,7 +293,8 @@ function buildContractCall(request: RelayRequest): ContractCall {
 }
 
 // ---------------------------------------------------------------------------
-// Paso 4 + 6: writeContract con reintento ante error de nonce (hasta 2 veces,
+// Paso 4 + 6: writeContract con reintento ante error de nonce (hasta 2
+// reintentos tras el intento inicial — 3 llamadas totales como máximo —,
 // nonce "pending", con hasta 250ms de espera entre intentos)
 // ---------------------------------------------------------------------------
 
@@ -285,10 +307,13 @@ async function writeWithNonceRetry(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   request: any,
 ): Promise<Hex> {
+  // `maxRetries` es la cantidad de REINTENTOS tras el intento inicial (no el
+  // total de intentos): con el default 2, se hacen hasta 3 llamadas a
+  // `writeContract` (attempt 0..2 inclusive).
   const maxRetries = deps.maxNonceRetries ?? 2;
   let lastError: unknown;
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) await sleep(250); // <= 500ms entre reintentos (docs §6)
     try {
       const nonce = await deps.publicClient.getTransactionCount({
@@ -308,7 +333,11 @@ async function writeWithNonceRetry(
     }
   }
 
-  throw lastError;
+  // con `maxNonceRetries` >= 0 el loop de arriba corre al menos una vez
+  // (attempt 0) y `lastError` queda seteado; este fallback es solo defensivo
+  // ante un `maxNonceRetries` negativo (input inválido, no debería pasar con
+  // el tipo `number` de `RelayDeps`, pero evita un `throw undefined` si pasa).
+  throw lastError ?? new Error("writeWithNonceRetry: no se ejecutó ningún intento (maxNonceRetries inválido)");
 }
 
 // ---------------------------------------------------------------------------

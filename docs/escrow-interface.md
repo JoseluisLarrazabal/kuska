@@ -146,13 +146,24 @@ event DisputeResolved(bytes32 indexed orderRef, bool toSeller);
 | `refundExpired`, `releaseAfterWindow` | `{ orderRef }` |
 
 **Pipeline obligatorio:**
-1. validar el esquema;
+1. validar el esquema (incluye rango: `deliveryDeadline` cabe en `uint64`; `amount`,
+   `authDeadline`, `permitDeadline`, `sigDeadline` caben en `uint256` — un valor fuera de
+   rango es `400 INVALID_REQUEST`, nunca llega a `simulateContract`);
 1.5. verificar (memoizado por proceso, solo el `true` — ver `contractGuard.ts`) que la dirección del escrow tenga bytecode desplegado — si no, `503 MISCONFIGURED` sin mandar ninguna tx;
 2. verificar off-chain la firma EIP-712 contra el firmante esperado. Para claim, cancel, release y dispute se lee `getDeal` y se usa `deal.seller` o `deal.buyer`;
 3. `simulateContract`;
 4. `writeContract`;
 5. `waitForTransactionReceipt` (timeout 20 s); si el receipt no viene con `status: "success"`, `409 TX_REVERTED` con el hash;
-6. ante un error de nonce (incluye "nonce too low" y "replacement underpriced"), reintentar hasta 2 veces con el nonce `pending` (hasta ~250ms de espera entre intentos).
+6. ante un error de nonce, reintentar con un nonce `pending` fresco. La detección es por
+   TIPO de error de viem (`NonceTooLowError` / `NonceTooHighError` / `NonceMaxValueError`, y
+   como red secundaria el `shortMessage`/`details` — nunca el `.message` completo, que
+   siempre contiene "nonce" por los request args — para "replacement transaction
+   underpriced"), **no** por buscar la palabra "nonce" en el mensaje de error (ver
+   `server/viemErrors.ts`). `maxNonceRetries` (default 2) cuenta REINTENTOS después del
+   intento inicial: hasta 3 llamadas totales a `writeContract`, con hasta ~250ms de espera
+   entre intentos. Un error de write que no es de nonce (p. ej. `insufficient funds`)
+   corta inmediatamente sin reintentar.
+7. si falta o es inválida una env var del servidor, `503 MISCONFIGURED` (nunca un 500 sin cuerpo).
 
 **Respuestas:**
 
@@ -162,28 +173,48 @@ event DisputeResolved(bytes32 indexed orderRef, bool toSeller);
 | `400` | `{ code: "INVALID_REQUEST" \| "INVALID_SIGNATURE" }` |
 | `409` | `{ code: "SIMULATION_REVERTED", reason }` (`reason` = nombre del custom error) o `{ code: "TX_REVERTED", hash }` |
 | `502` | `{ code: "RPC_ERROR" }` |
-| `503` | `{ code: "MISCONFIGURED" }` (la dirección del escrow/token configurada no tiene bytecode) |
+| `503` | `{ code: "MISCONFIGURED" }` (la dirección del escrow/token configurada no tiene bytecode, o falta/es inválida una env var del servidor) |
 | `504` | `{ code: "RECEIPT_TIMEOUT", hash }` |
 
 ### `POST /api/faucet`
-- Body `{ to }`: llama `MockUSD.faucet(to)` (simular primero). Antes de simular, verifica
-  (memoizado por proceso, solo el `true` — ver `contractGuard.ts`) que la dirección del
-  token tenga bytecode desplegado.
+- Body `{ to }`: llama `MockUSD.faucet(to)` (simular primero). Antes de simular:
+  - se aplica un **rate limit por IP** (`x-forwarded-for`, primer valor, con fallback a
+    `x-real-ip`): máximo 3 pedidos cada 10 minutos por IP, en memoria de proceso (ventana
+    deslizante). Es mitigación best-effort, NO una garantía — en serverless cada instancia
+    tiene su propio estado — pero sube el costo de un ataque de "una IP, muchas direcciones
+    nuevas" contra el único freno real (el cooldown de `MockUSD`, que es por dirección
+    destino, no por IP);
+  - se verifica que el saldo del relayer esté por encima de un piso (default 0,02 HSK, igual
+    umbral que `lowBalance` de `/api/health`) — si no, `503 RELAYER_LOW_BALANCE` sin mandar
+    nada;
+  - se verifica (memoizado por proceso, solo el `true` — ver `contractGuard.ts`) que la
+    dirección del token tenga bytecode desplegado.
 - Tras `writeContract`, espera el receipt (`waitForTransactionReceipt`, timeout 20 s, igual
   que `/api/relay` §6) antes de responder: una tx que revierte on-chain no puede reportarse
   como éxito.
 - Respuestas:
   - `200 { hash, blockNumber, status: "success" }`;
-  - `409 { code: "FAUCET_COOLDOWN", availableAt }` (simulación revertida por cooldown) o
+  - `409 { code: "FAUCET_COOLDOWN", availableAt }` (simulación revertida por cooldown),
+    `409 { code: "SIMULATION_REVERTED", reason }` (cualquier otro revert de simulación:
+    token pausado, custom error renombrado, etc. — `reason` = nombre del custom error) o
     `409 { code: "TX_REVERTED", hash }` (la tx minada revirtió igual);
+  - `429 { code: "RATE_LIMITED", retryAfter }` (`retryAfter` en segundos);
   - `502 { code: "RPC_ERROR" }`;
-  - `503 { code: "MISCONFIGURED" }` (la dirección del token no tiene bytecode);
+  - `503 { code: "MISCONFIGURED" }` (la dirección del token no tiene bytecode, o falta/es
+    inválida una env var del servidor) o `503 { code: "RELAYER_LOW_BALANCE" }`;
   - `504 { code: "RECEIPT_TIMEOUT", hash }`;
   - en mainnet → `404`.
 
 ### `GET /api/health`
-- Devuelve `{ chainId, relayer, relayerBalanceWei, escrow, token, lowBalance }`.
+- Devuelve `{ chainId, relayer, relayerBalanceWei, escrow, token, lowBalance, tokenMatchesEscrow }`.
 - `lowBalance` = saldo < 0,02 HSK.
+- `tokenMatchesEscrow` = `true` solo si se pudo leer `escrow.token()` on-chain y coincide con
+  `TOKEN_ADDRESS`; `false` si no coinciden o si no se pudo determinar (p. ej. el escrow
+  todavía no tiene bytecode desplegado). Un `TOKEN_ADDRESS` mal configurado hace que el
+  faucet mintee un token que el escrow no acepta — sin este chequeo, el depósito recién
+  fallaría en `safeTransferFrom`, mucho después.
+- Si falta o es inválida una env var del servidor: `503 { code: "MISCONFIGURED" }` (en vez
+  del cuerpo de arriba).
 
 ### Variables de entorno
 - **Servidor**: `RELAYER_PRIVATE_KEY` (sensible, nunca `VITE_`), `CHAIN_ID`, `RPC_URL`.
