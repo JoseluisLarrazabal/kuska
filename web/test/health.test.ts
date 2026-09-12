@@ -76,4 +76,28 @@ describe("handleHealth", () => {
 
     expect(result.tokenMatchesEscrow).toBe(false);
   });
+
+  // -- fix MEDIO 3: getBalance sin try/catch --------------------------------
+
+  it("degrada (no revienta) cuando getBalance del relayer rechaza: reporta la dependencia caída en el body", async () => {
+    const { deps, publicClient } = createDeps();
+    publicClient.getBalance.mockRejectedValue(new Error("rpc caído"));
+
+    const result = await handleHealth(deps);
+
+    expect(result.relayerBalanceError).toBe(true);
+    expect(result.relayerBalanceWei).toBe("0");
+    expect(result.lowBalance).toBe(true);
+    // el resto del body sigue siendo válido: no un 500 sin cuerpo.
+    expect(result.chainId).toBe(133);
+    expect(result.relayer).toBe(relayerAccount.address);
+  });
+
+  it("relayerBalanceError está ausente (no `false`) en el camino feliz", async () => {
+    const { deps } = createDeps();
+
+    const result = await handleHealth(deps);
+
+    expect(result.relayerBalanceError).toBeUndefined();
+  });
 });

@@ -330,6 +330,18 @@ describe("handleRelay", () => {
     expect(walletClient.writeContract).not.toHaveBeenCalled();
   });
 
+  it("502 RPC_ERROR cuando getCode (guard del escrow) rechaza, sin llamar verifyTypedData/simulateContract/writeContract", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.getCode.mockRejectedValue(new Error("rpc caído"));
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
+    expect(publicClient.verifyTypedData).not.toHaveBeenCalled();
+    expect(publicClient.simulateContract).not.toHaveBeenCalled();
+    expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
   it("cachea el resultado de getCode en memoria: solo golpea el RPC una vez por dirección", async () => {
     const { deps, publicClient } = createDeps();
 
@@ -408,5 +420,23 @@ describe("relayRequestSchema — validación de firmas (fix ERC-1271)", () => {
       params: { ...depositParams, permitSig: shortPermit },
     });
     expect(result.success).toBe(false);
+  });
+
+  // -- fix BAJO 4: cota de largo ANTES de `BigInt(v)` ----------------------
+
+  it("rechaza un `amount` de 1000 dígitos (más largo que uint256.max, 78 dígitos) sin llegar a parsear BigInt", () => {
+    const hugeDecimalString = "1".repeat(1000);
+    const result = relayRequestSchema.safeParse({
+      action: "deposit",
+      params: { ...depositParams, amount: hugeDecimalString },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // el error debe venir del `.max(78)` sobre el STRING (rechazado antes
+      // del `.transform` a BigInt), no de un `.refine` posterior al parseo.
+      const amountIssue = result.error.issues.find((i) => i.path.includes("amount"));
+      expect(amountIssue?.message).toMatch(/demasiado larga/);
+    }
   });
 });

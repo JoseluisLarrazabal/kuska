@@ -190,7 +190,16 @@ export async function handleFaucet(
   // la dirección del token debe ser realmente un contrato (memoizado por
   // proceso) antes de mandar ninguna transacción — ver contractGuard.ts. El
   // relayer ya mandó una tx de faucet a una dirección sin contrato en testnet.
-  const tokenIsContract = await isContractAddress(deps.publicClient, deps.tokenAddress);
+  let tokenIsContract: boolean;
+  try {
+    tokenIsContract = await isContractAddress(deps.publicClient, deps.tokenAddress);
+  } catch {
+    // un `eth_getCode` caído (cold start, o cuando el `true` todavía no está
+    // cacheado) no puede escapar como 500 sin manejar — mismo contrato 502
+    // RPC_ERROR que el resto de las llamadas a RPC de este handler (ver
+    // `getBalance` arriba, docs/escrow-interface.md §6).
+    return { status: 502, body: { code: "RPC_ERROR" } };
+  }
   if (!tokenIsContract) {
     return { status: 503, body: { code: "MISCONFIGURED" } };
   }

@@ -50,10 +50,19 @@ const permitSignature = z
 const UINT64_MAX = (1n << 64n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;
 
+// 78 = cantidad de dígitos decimales de `type(uint256).max` (el tipo más
+// grande que se acota acá): una cota de LARGO de string ANTES del `.transform`
+// que hace `BigInt(v)`. Sin esto, un POST no autenticado con un string de
+// millones de dígitos fuerza un parseo de BigInt super-lineal (bloqueante)
+// ANTES de que el `.refine` de abajo tenga chance de rechazarlo — la cota de
+// tamaño tiene que ir en el string, no después del parseo.
+const MAX_UINT256_DECIMAL_DIGITS = 78;
+
 function boundedDecimalString(max: bigint, typeLabel: string) {
   return z
     .string()
     .regex(/^\d+$/, "debe ser un entero decimal en formato string")
+    .max(MAX_UINT256_DECIMAL_DIGITS, `cadena numérica demasiado larga para ${typeLabel}`)
     .transform((v) => BigInt(v))
     .refine((v) => v <= max, `excede el máximo permitido para ${typeLabel}`);
 }
@@ -353,7 +362,15 @@ export async function handleRelay(body: unknown, deps: RelayDeps): Promise<Relay
   // 1.5. la dirección del escrow debe ser realmente un contrato (memoizado
   // por proceso) antes de mandar ninguna transacción — ver docs en
   // contractGuard.ts.
-  const escrowIsContract = await isContractAddress(deps.publicClient, deps.escrowAddress);
+  let escrowIsContract: boolean;
+  try {
+    escrowIsContract = await isContractAddress(deps.publicClient, deps.escrowAddress);
+  } catch {
+    // un `eth_getCode` caído (cold start, o cuando el `true` todavía no está
+    // cacheado) no puede escapar como 500 sin manejar — mismo contrato 502
+    // RPC_ERROR que el resto de las llamadas a RPC de este handler (docs/escrow-interface.md §6).
+    return rpcError();
+  }
   if (!escrowIsContract) return misconfigured();
 
   // 2. verificar off-chain la firma EIP-712 contra el firmante esperado

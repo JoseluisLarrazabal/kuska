@@ -238,6 +238,23 @@ describe("handleFaucet", () => {
     }
   });
 
+  // -- fix MEDIO 1: getCode del guard de contrato sin try/catch ------------
+
+  it("502 RPC_ERROR cuando getCode (guard del token) rechaza, sin llamar simulateContract/writeContract", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.getCode.mockRejectedValue(new Error("rpc caído"));
+
+    const result = await handleFaucet(
+      { to: "0x3333333333333333333333333333333333333333" },
+      deps,
+      TEST_IP,
+    );
+
+    expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
+    expect(publicClient.simulateContract).not.toHaveBeenCalled();
+    expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
   // -- fix BAJO 8: mapeo de errores de simulación más preciso --------------
 
   it("409 SIMULATION_REVERTED con el nombre del custom error para un revert que NO es FaucetCooldown", async () => {

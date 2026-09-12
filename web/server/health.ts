@@ -25,6 +25,16 @@ export interface HealthResponse {
    * fallaría recién en `safeTransferFrom`.
    */
   tokenMatchesEscrow: boolean;
+  /**
+   * `true` solo cuando `getBalance` del relayer falló (RPC caído): `/api/health`
+   * es justo el endpoint que existe para diagnosticar un RPC caído, así que
+   * degrada en vez de crashear con un 500 sin cuerpo (docs/escrow-interface.md
+   * §6). El resto del body sigue siendo válido; `relayerBalanceWei` queda en
+   * `"0"` y `lowBalance` en `true` (conservador: no se pudo verificar el saldo
+   * real, así que no se puede afirmar que NO está bajo). Ausente (no `false`)
+   * en el camino feliz, para no ensuciar el shape documentado.
+   */
+  relayerBalanceError?: boolean;
 }
 
 /** `lowBalance` = saldo < 0.02 HSK (docs/escrow-interface.md §6). */
@@ -32,7 +42,17 @@ const LOW_BALANCE_THRESHOLD_WEI = 20_000_000_000_000_000n;
 
 /** `GET /api/health` (docs/escrow-interface.md §6). */
 export async function handleHealth(deps: HealthDeps): Promise<HealthResponse> {
-  const balance = await deps.publicClient.getBalance({ address: deps.relayerAccount.address });
+  let balance: bigint;
+  let relayerBalanceError = false;
+  try {
+    balance = await deps.publicClient.getBalance({ address: deps.relayerAccount.address });
+  } catch {
+    // un RPC caído acá no puede escapar como un 500 sin cuerpo — justo este
+    // endpoint es el que se usa para diagnosticar el incidente (ver docblock
+    // de `relayerBalanceError`). Degradar, no crashear.
+    balance = 0n;
+    relayerBalanceError = true;
+  }
 
   let tokenMatchesEscrow = false;
   try {
@@ -53,7 +73,8 @@ export async function handleHealth(deps: HealthDeps): Promise<HealthResponse> {
     relayerBalanceWei: balance.toString(),
     escrow: deps.escrowAddress,
     token: deps.tokenAddress,
-    lowBalance: balance < LOW_BALANCE_THRESHOLD_WEI,
+    lowBalance: relayerBalanceError ? true : balance < LOW_BALANCE_THRESHOLD_WEI,
     tokenMatchesEscrow,
+    ...(relayerBalanceError ? { relayerBalanceError: true as const } : {}),
   };
 }
