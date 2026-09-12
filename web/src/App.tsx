@@ -1,39 +1,35 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
+import { ErrorBoundary } from "./lib/ui/components/ErrorBoundary";
+import { RouteFallback } from "./lib/ui/components/RouteFallback";
 
-// Pantallas reales: carril B2. Estas son rutas placeholder mínimas.
-function Home() {
-  return <h1>Kuska</h1>;
-}
-
-function Comprar() {
-  return <h1>Comprar</h1>;
-}
-
-function Pedido() {
-  return <h1>Pedido</h1>;
-}
-
-function Entregar() {
-  return <h1>Entregar</h1>;
-}
-
-function Vendedor() {
-  return <h1>Vendedor</h1>;
-}
-
-function Demo() {
-  return <h1>Demo</h1>;
-}
+// Import perezoso de TODAS las páginas: cada una queda en su propio chunk y
+// solo se descarga cuando se visita esa ruta (bundle inicial más chico —
+// ver vite.config.ts para el split de vendors). `Landing` (`/`) también es
+// lazy, pero al no importar `getDeploymentConfig` sigue funcionando aunque
+// el env esté mal configurado.
+const Landing = lazy(() => import("./pages/Landing"));
+const Buy = lazy(() => import("./pages/Buy"));
+const Order = lazy(() => import("./pages/Order"));
+const Deliver = lazy(() => import("./pages/Deliver"));
+const Seller = lazy(() => import("./pages/Seller"));
+const Demo = lazy(() => import("./pages/Demo"));
+const Preview = lazy(() => import("./pages/Preview"));
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/comprar" element={<Comprar />} />
-      <Route path="/pedido/:ref" element={<Pedido />} />
-      <Route path="/entregar" element={<Entregar />} />
-      <Route path="/vendedor" element={<Vendedor />} />
-      <Route path="/demo" element={<Demo />} />
-    </Routes>
+    <ErrorBoundary>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/comprar" element={<Buy />} />
+          <Route path="/pedido/:ref" element={<Order />} />
+          <Route path="/entregar" element={<Deliver />} />
+          <Route path="/vendedor" element={<Seller />} />
+          <Route path="/demo" element={<Demo />} />
+          {import.meta.env.DEV ? <Route path="/_preview" element={<Preview />} /> : null}
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   );
 }
