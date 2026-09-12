@@ -1,7 +1,42 @@
-import { describe, expect, it } from "vitest";
-import { MAX_ITEM_LENGTH, parseItemFromText, parseOrderRefFromText } from "../src/lib/ui/orderLink";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Hex } from "viem";
+import { buildConfirmUrl, MAX_ITEM_LENGTH, parseItemFromText, parseOrderRefFromText } from "../src/lib/ui/orderLink";
 
-const REF = `0x${"a".repeat(64)}`;
+const REF = `0x${"a".repeat(64)}` as Hex;
+
+const ORIGIN = "https://kuska.app";
+
+describe("buildConfirmUrl", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", { location: { origin: ORIGIN } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sin item, arma la URL base", () => {
+    expect(buildConfirmUrl(REF)).toBe(`${ORIGIN}/pedido/${REF}?accion=liberar`);
+  });
+
+  it("con item, lo agrega codificado como query param", () => {
+    expect(buildConfirmUrl(REF, "40 cajas M8")).toBe(
+      `${ORIGIN}/pedido/${REF}?accion=liberar&item=40%20cajas%20M8`,
+    );
+  });
+
+  it("con item vacío o solo espacios, no agrega el query param", () => {
+    expect(buildConfirmUrl(REF, "")).toBe(`${ORIGIN}/pedido/${REF}?accion=liberar`);
+    expect(buildConfirmUrl(REF, "   ")).toBe(`${ORIGIN}/pedido/${REF}?accion=liberar`);
+  });
+
+  it("recorta el item a MAX_ITEM_LENGTH", () => {
+    const long = "x".repeat(MAX_ITEM_LENGTH + 50);
+    const url = buildConfirmUrl(REF, long);
+    const raw = url.split("&item=").at(1) ?? "";
+    expect(decodeURIComponent(raw)).toHaveLength(MAX_ITEM_LENGTH);
+  });
+});
 
 describe("parseOrderRefFromText", () => {
   it("extrae el ref de una URL completa", () => {
@@ -48,5 +83,17 @@ describe("parseItemFromText", () => {
 
   it("devuelve undefined ante percent-encoding malformado en vez de tirar", () => {
     expect(parseItemFromText(`https://x/pedido/${REF}?item=%E0%A4%A`)).toBeUndefined();
+  });
+
+  it("decodifica `+` como espacio (semántica form-urlencoded)", () => {
+    expect(parseItemFromText(`https://x/pedido/${REF}?item=40+cajas`)).toBe("40 cajas");
+  });
+
+  it("no incluye el fragmento (`#...`) en el valor", () => {
+    expect(parseItemFromText(`https://x/pedido/${REF}?item=cajas#seccion`)).toBe("cajas");
+  });
+
+  it("corta en el siguiente `&` cuando item no es el último query param", () => {
+    expect(parseItemFromText(`https://x/pedido/${REF}?item=cajas&other=param`)).toBe("cajas");
   });
 });

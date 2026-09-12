@@ -263,7 +263,7 @@ function SellerOrderCard({
       {deal.state === DealState.DeliveryClaimed ? (
         <div className="mt-4 flex flex-col items-center gap-2 rounded-panel bg-blanco p-4 text-center">
           <p className="font-mono text-xs text-verde-mut">Pedido #{order.ref.slice(2, 8)}</p>
-          <QrCode value={buildConfirmUrl(order.ref)} />
+          <QrCode value={buildConfirmUrl(order.ref, order.item)} />
           <p className="text-sm font-medium text-verde">Pedile al comprador que escanee</p>
           <Countdown label="Ventana de disputa:" deadline={disputeDeadline} />
         </div>

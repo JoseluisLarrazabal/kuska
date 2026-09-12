@@ -159,7 +159,7 @@ export default function Order() {
             ) : null}
           </div>
 
-          {highlightRelease && deal.state === DealState.DeliveryClaimed ? (
+          {highlightRelease && deal.state === DealState.DeliveryClaimed && role === "buyer" ? (
             <Banner kind="info" title="Escaneaste el QR del vendedor" className="mt-4">
               Confirmá la recepción para liberar el pago.
             </Banner>
@@ -216,10 +216,10 @@ export default function Order() {
             ) : null}
 
             {deal.state === DealState.Funded && role === "buyer" ? (
-              now >= Number(deal.deliveryDeadline) ? (
+              canRequestRefund(deal, role, now) ? (
                 <p className="text-center text-sm text-verde-mut">
-                  Venció el plazo de entrega sin que el vendedor la registrara. Podés pedir
-                  el reembolso con el botón de abajo.
+                  Venció el plazo de entrega sin que el vendedor la registrara: ya podés
+                  pedir el reembolso.
                 </p>
               ) : (
                 <p className="text-center text-sm text-verde-mut">

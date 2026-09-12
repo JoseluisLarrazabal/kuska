@@ -1,14 +1,24 @@
 import type { Hex } from "viem";
 
 const HEX32_RE = /0x[0-9a-fA-F]{64}/;
-const ITEM_QUERY_RE = /[?&]item=([^&\s]*)/;
+const ITEM_QUERY_RE = /[?&]item=([^&#\s]*)/;
 
 /** Largo máximo de un `item` pegado desde un link — cota defensiva, no hay límite en el contrato (nunca se guarda en cadena, ver `Buy.tsx`). */
 export const MAX_ITEM_LENGTH = 120;
 
-/** URL de confirmación que se codifica en el QR que muestra el vendedor. */
-export function buildConfirmUrl(orderRef: Hex): string {
-  return `${window.location.origin}/pedido/${orderRef}?accion=liberar`;
+/**
+ * URL de confirmación que se codifica en el QR que muestra el vendedor.
+ * Si el pedido tiene un `item` (label humano trackeado del lado del
+ * vendedor), se propaga como query param para que `Deliver.tsx`
+ * (`parseItemFromText`) pueda recuperarlo al escanear — sin esto el label
+ * se perdía apenas el comprador escaneaba el QR del vendedor.
+ */
+export function buildConfirmUrl(orderRef: Hex, item?: string): string {
+  const base = `${window.location.origin}/pedido/${orderRef}?accion=liberar`;
+  const trimmed = item?.trim();
+  if (!trimmed) return base;
+  const capped = trimmed.length > MAX_ITEM_LENGTH ? trimmed.slice(0, MAX_ITEM_LENGTH) : trimmed;
+  return `${base}&item=${encodeURIComponent(capped)}`;
 }
 
 /** Extrae un `orderRef` (bytes32) de un texto escaneado o pegado a mano: acepta la URL completa o el hex pelado. */
@@ -35,7 +45,9 @@ export function parseItemFromText(text: string): string | undefined {
   if (!match || !match[1]) return undefined;
   let decoded: string;
   try {
-    decoded = decodeURIComponent(match[1]);
+    // Semántica de query string form-urlencoded (igual que `URLSearchParams`):
+    // `+` representa un espacio, no un `+` literal.
+    decoded = decodeURIComponent(match[1].replace(/\+/g, " "));
   } catch {
     return undefined; // percent-encoding malformado
   }
