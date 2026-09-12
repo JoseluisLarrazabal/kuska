@@ -61,17 +61,60 @@ const DEFAULT_MIN_RELAYER_BALANCE_WEI = 20_000_000_000_000_000n;
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
 const RATE_LIMIT_MAX_REQUESTS = 3; // por IP, por ventana
 
+// Cota dura de IPs distintas retenidas en memoria a la vez. Sin esto, el
+// `Map` sólo se poda para la IP que está pidiendo AHORA — las entradas de
+// clientes que ya se fueron (su ventana expiró hace rato pero nunca volvieron
+// a pedir) quedan colgadas en memoria toda la vida del proceso, así que la
+// memoria crece con la cantidad de IPs distintas vistas, no con el tráfico
+// concurrente real (hallazgo de revisión externa, Codex). 5000 es generoso
+// para el tráfico de esta demo y acota el peor caso a un puñado de MB.
+const RATE_LIMIT_MAX_TRACKED_IPS = 5000;
+
 const requestTimestampsByIp = new Map<string, number[]>();
+
+/**
+ * Poda el `Map` de rate limit en dos pasadas:
+ * 1) elimina las IPs cuya ventana ya expiró por completo (nadie de esa IP
+ *    pidió nada en los últimos `RATE_LIMIT_WINDOW_MS`);
+ * 2) si el `Map` sigue por encima de la cota dura, descarta las entradas más
+ *    viejas hasta volver a estar bajo la cota.
+ * `requestTimestampsByIp` siempre reinserta (delete + set) la IP que tocó en
+ * cada pedido, así el orden de iteración del `Map` funciona como un LRU
+ * aproximado (la primera clave es la menos usada recientemente) sin
+ * estructuras de datos extra.
+ */
+function evictStaleRateLimitEntries(now: number): void {
+  for (const [ip, timestamps] of requestTimestampsByIp) {
+    const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+    if (recent.length === 0) {
+      requestTimestampsByIp.delete(ip);
+    } else if (recent.length !== timestamps.length) {
+      requestTimestampsByIp.set(ip, recent);
+    }
+  }
+
+  while (requestTimestampsByIp.size > RATE_LIMIT_MAX_TRACKED_IPS) {
+    const oldestIp = requestTimestampsByIp.keys().next().value;
+    if (oldestIp === undefined) break;
+    requestTimestampsByIp.delete(oldestIp);
+  }
+}
 
 function checkRateLimit(
   ip: string,
   now: number = Date.now(),
 ): { limited: boolean; retryAfterSeconds: number } {
+  evictStaleRateLimitEntries(now);
+
   const recent = (requestTimestampsByIp.get(ip) ?? []).filter(
     (t) => now - t < RATE_LIMIT_WINDOW_MS,
   );
 
   if (recent.length >= RATE_LIMIT_MAX_REQUESTS) {
+    // delete + set (en vez de sólo set) para que esta IP quede como la más
+    // recientemente tocada en el orden de iteración del Map — ver eviction
+    // LRU en `evictStaleRateLimitEntries`.
+    requestTimestampsByIp.delete(ip);
     requestTimestampsByIp.set(ip, recent);
     const oldest = recent[0] ?? now;
     const retryAfterMs = RATE_LIMIT_WINDOW_MS - (now - oldest);
@@ -79,6 +122,7 @@ function checkRateLimit(
   }
 
   recent.push(now);
+  requestTimestampsByIp.delete(ip);
   requestTimestampsByIp.set(ip, recent);
   return { limited: false, retryAfterSeconds: 0 };
 }
@@ -86,6 +130,11 @@ function checkRateLimit(
 /** Solo para tests: limpia el rate limiter del faucet en memoria. */
 export function resetFaucetRateLimiter(): void {
   requestTimestampsByIp.clear();
+}
+
+/** Solo para tests: cantidad de IPs actualmente trackeadas por el rate limiter. */
+export function getFaucetRateLimiterSize(): number {
+  return requestTimestampsByIp.size;
 }
 
 /**
@@ -123,9 +172,17 @@ export async function handleFaucet(
   // relayer, mandar una tx que sabemos que no se puede pagar (o que deja al
   // relayer sin margen para el resto de la demo) es peor que rechazarla acá.
   const minBalance = deps.minRelayerBalanceWei ?? DEFAULT_MIN_RELAYER_BALANCE_WEI;
-  const relayerBalance = await deps.publicClient.getBalance({
-    address: deps.relayerAccount.address,
-  });
+  let relayerBalance: bigint;
+  try {
+    relayerBalance = await deps.publicClient.getBalance({
+      address: deps.relayerAccount.address,
+    });
+  } catch {
+    // un RPC caído acá no puede escapar como 500 sin manejar — mismo
+    // contrato 502 RPC_ERROR que el resto de las llamadas a RPC de este
+    // handler (docs/escrow-interface.md §6).
+    return { status: 502, body: { code: "RPC_ERROR" } };
+  }
   if (relayerBalance < minBalance) {
     return { status: 503, body: { code: "RELAYER_LOW_BALANCE" } };
   }

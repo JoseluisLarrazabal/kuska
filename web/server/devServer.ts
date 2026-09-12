@@ -25,11 +25,17 @@ async function toWebRequest(req: http.IncomingMessage): Promise<Request> {
     if (typeof value === "string") headers.set(key, value);
     else if (Array.isArray(value)) headers.set(key, value.join(", "));
   }
-  // en prod (Vercel) `x-forwarded-for` ya viene seteado por la plataforma;
-  // en este servidor de dev local no hay proxy que lo agregue, así que lo
-  // derivamos del socket para que `getClientIp` (usado por /api/faucet para
-  // el rate limit) tenga algo con qué trabajar.
-  if (!headers.has("x-forwarded-for") && req.socket.remoteAddress) {
+  // en prod (Vercel) `x-forwarded-for` ya viene seteado por la plataforma
+  // (un proxy de confianza) y `getClientIp` confía en ese header. ACÁ no hay
+  // ningún proxy delante: este `http.createServer` recibe la conexión TCP
+  // directamente, así que cualquier caller puede mandar su propio
+  // `x-forwarded-for`/`x-real-ip` y rotarlo en cada pedido para esquivar el
+  // rate limit por IP del faucet (gastando gas del relayer sin límite). Por
+  // eso acá SIEMPRE se descarta lo que mande el caller y se deriva la IP del
+  // socket real — nunca se confía en un header que el propio cliente controla.
+  headers.delete("x-forwarded-for");
+  headers.delete("x-real-ip");
+  if (req.socket.remoteAddress) {
     headers.set("x-forwarded-for", req.socket.remoteAddress);
   }
 
@@ -76,6 +82,8 @@ const server = http.createServer((req, res) => {
   })();
 });
 
-server.listen(PORT, () => {
+// sólo loopback: este servidor no valida origen ni tiene un proxy de
+// confianza delante, así que no debe quedar expuesto en la red local.
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`[kuska] dev API server listening on http://localhost:${PORT}`);
 });

@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContractFunctionRevertedError, encodeErrorResult, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { handleFaucet, resetFaucetRateLimiter, type FaucetDeps } from "../server/faucet";
+import {
+  handleFaucet,
+  resetFaucetRateLimiter,
+  getFaucetRateLimiterSize,
+  type FaucetDeps,
+} from "../server/faucet";
 import { resetContractGuardCache } from "../server/contractGuard";
 import { mockUsdAbi } from "../src/lib/escrow/abi";
 
@@ -158,6 +163,21 @@ describe("handleFaucet", () => {
     expect(walletClient.writeContract).not.toHaveBeenCalled();
   });
 
+  it("502 RPC_ERROR cuando getBalance (piso de saldo del relayer) rechaza, sin llamar simulateContract/writeContract", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.getBalance.mockRejectedValue(new Error("rpc caído"));
+
+    const result = await handleFaucet(
+      { to: "0x3333333333333333333333333333333333333333" },
+      deps,
+      TEST_IP,
+    );
+
+    expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
+    expect(publicClient.simulateContract).not.toHaveBeenCalled();
+    expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
   // -- fix ALTO 3: rate limit por IP ---------------------------------------
 
   it("429 RATE_LIMITED después de 3 pedidos de la misma IP en la ventana, sin llamar simulateContract", async () => {
@@ -191,6 +211,31 @@ describe("handleFaucet", () => {
 
     const otherIpResult = await handleFaucet({ to }, deps, "198.51.100.7");
     expect(otherIpResult.status).toBe(200);
+  });
+
+  it("el rate limiter no acumula memoria indefinidamente: las entradas expiradas se eliminan del Map", async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps } = createDeps();
+      const to = "0x3333333333333333333333333333333333333333";
+
+      await handleFaucet({ to }, deps, TEST_IP);
+      expect(getFaucetRateLimiterSize()).toBe(1);
+
+      // avanzar más allá de la ventana de rate limit (10 minutos): la
+      // entrada de TEST_IP queda completamente expirada.
+      vi.advanceTimersByTime(11 * 60 * 1000);
+
+      // cualquier pedido posterior dispara el barrido de entradas expiradas
+      // (evictStaleRateLimitEntries) — no hace falta que sea la misma IP.
+      await handleFaucet({ to }, deps, "198.51.100.9");
+
+      // sólo debería quedar la entrada de la IP nueva: la de TEST_IP, ya
+      // expirada, se evictó en vez de quedar colgada en memoria.
+      expect(getFaucetRateLimiterSize()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // -- fix BAJO 8: mapeo de errores de simulación más preciso --------------
