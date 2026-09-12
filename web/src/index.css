@@ -8,6 +8,7 @@
   --color-hueso: #f2e9d8;
   --color-verde-mut: #55665f;
   --color-terracota: #c1440e;
+  --color-terracota-ink: #a43a0c;
   --color-terracota-tint: #fbd9c8;
   --color-blanco: #ffffff;
 
@@ -66,6 +67,22 @@
     content: "";
     position: absolute;
     inset: -10px;
+  }
+
+  /* Variante para pares de botones ícono h-9 w-9 (36px) apoyados uno junto al
+     otro (AddressMono/HashMono): con inset -10px sus áreas de 44px se pisan
+     entre sí a gap-1.5 (6px). Acá el botón visible ya mide 36px, así que un
+     inset de -4px alcanza igual el mínimo de 44px (36 + 2*4) sin invadir al
+     vecino: con `gap-2` (8px) entre botones, el área de -4px llega hasta
+     el punto medio del gap desde cada lado, así que las dos áreas de toque
+     se tocan justo en el medio (8 - 2*4 = 0px libres, 0px de superposición). */
+  .tap-target-icon {
+    position: relative;
+  }
+  .tap-target-icon::before {
+    content: "";
+    position: absolute;
+    inset: -4px;
   }
 }
 

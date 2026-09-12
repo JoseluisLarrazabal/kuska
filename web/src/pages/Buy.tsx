@@ -205,13 +205,13 @@ export default function Buy() {
             type="button"
             onClick={requestFaucet}
             disabled={faucetStatus === "loading"}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-verde-mut hover:text-verde disabled:opacity-60"
+            className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-verde-mut hover:text-verde disabled:opacity-60"
           >
             <DropletIcon size={16} />
             {faucetStatus === "loading" ? "Pidiendo fondos…" : "Pedir mUSD de prueba para esta cuenta"}
           </button>
           {faucetMessage ? (
-            <p className={`mt-1 text-xs ${faucetStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
+            <p className={`mt-1 text-xs ${faucetStatus === "error" ? "text-terracota-ink" : "text-verde-mut"}`}>
               {faucetMessage}
             </p>
           ) : null}

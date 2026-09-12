@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
@@ -22,7 +22,12 @@ import {
 } from "../lib/ui/dealActions";
 import type { RelayOutcome } from "../lib/ui/relayer";
 import { useNow } from "../lib/ui/useNow";
-import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
+import {
+  canOpenDisputeWindow,
+  canReleaseAfterWindow,
+  canRequestRefund,
+  disputeTapDecision,
+} from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { endSentence, formatDeadline } from "../lib/ui/format";
 import { findTrackedOrder, trackOrder } from "../lib/ui/orderRegistry";
@@ -56,10 +61,43 @@ export default function Order() {
   const now = useNow();
   const [action, setAction] = useState<ActionState>({ pending: null, error: null, lastTxHash: null });
 
+  // Confirmación de dos toques para "Abrir una disputa" (acción sensible: pasa
+  // el pedido a un árbitro centralizado): el primer toque solo arma el botón
+  // por 5s, el segundo toque dentro de esa ventana ejecuta la acción. Un
+  // segundo toque que llega antes de `DISPUTE_CONFIRM_MIN_MS` (doble-click o
+  // doble-tap accidental) se ignora en vez de ejecutar — ver
+  // `disputeTapDecision` en `dealTiming.ts`. Se desarma solo al vencer el
+  // timeout, si el estado del pedido cambia (p. ej. otra pestaña ya la
+  // abrió, o ya se liberó el pago), o si cambia el pedido (`validRef`) —
+  // React reutiliza este componente al navegar entre rutas `/pedido/:ref`,
+  // así que sin `validRef` en las dependencias, armar la disputa en el
+  // pedido A y navegar al pedido B (con el mismo `deal.state`) dejaba el
+  // botón armado para B.
+  const DISPUTE_CONFIRM_MS = 5000;
+  const DISPUTE_CONFIRM_MIN_MS = 500;
+  const [disputeArmed, setDisputeArmed] = useState(false);
+  const disputeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disputeArmedAtRef = useRef<number | null>(null);
+
   // se registra el link visitado: sirve para volver a encontrarlo desde /vendedor
   useEffect(() => {
     if (validRef) trackOrder(validRef, item ? { item } : {});
   }, [validRef, item]);
+
+  useEffect(() => {
+    setDisputeArmed(false);
+    disputeArmedAtRef.current = null;
+    if (disputeTimerRef.current) {
+      clearTimeout(disputeTimerRef.current);
+      disputeTimerRef.current = null;
+    }
+  }, [deal?.state, validRef]);
+
+  useEffect(() => {
+    return () => {
+      if (disputeTimerRef.current) clearTimeout(disputeTimerRef.current);
+    };
+  }, []);
 
   if (!validRef) {
     return (
@@ -133,9 +171,13 @@ export default function Order() {
               Mostrando el último estado conocido. Puede haber cambiado desde entonces.
             </Banner>
           ) : null}
-          <div className="mt-6 flex items-center justify-between rounded-card bg-blanco p-4">
+          <div className="mt-6 flex items-center justify-between rounded-card bg-blanco p-4 shadow-sm">
             <StatusChip state={deal.state} />
-            <AmountMono amount={deal.amount} size="md" />
+            {deal.state === DealState.None ? (
+              <span className="font-mono text-2xl font-semibold text-verde-mut">—</span>
+            ) : (
+              <AmountMono amount={deal.amount} size="md" />
+            )}
           </div>
 
           {deal.state === DealState.None ? (
@@ -255,13 +297,48 @@ export default function Order() {
                   Confirmar recepción y liberar el pago
                 </Button>
                 {canOpenDisputeWindow(disputeDeadline, disputeWindowIsGuess, now) ? (
-                  <Button
-                    variant="secondary"
-                    busy={action.pending === "dispute"}
-                    onClick={() => runAction("dispute", () => openDispute(burner, validRef))}
-                  >
-                    Abrir una disputa
-                  </Button>
+                  <div className="flex flex-col gap-1">
+                    <Button
+                      variant="secondary"
+                      busy={action.pending === "dispute"}
+                      onClick={() => {
+                        const decision = disputeTapDecision({
+                          armed: disputeArmed,
+                          armedAt: disputeArmedAtRef.current,
+                          now: Date.now(),
+                          minMs: DISPUTE_CONFIRM_MIN_MS,
+                          windowMs: DISPUTE_CONFIRM_MS,
+                        });
+                        if (decision === "ignore") return;
+                        if (decision === "arm") {
+                          setDisputeArmed(true);
+                          disputeArmedAtRef.current = Date.now();
+                          if (disputeTimerRef.current) clearTimeout(disputeTimerRef.current);
+                          disputeTimerRef.current = setTimeout(() => {
+                            setDisputeArmed(false);
+                            disputeArmedAtRef.current = null;
+                            disputeTimerRef.current = null;
+                          }, DISPUTE_CONFIRM_MS);
+                          return;
+                        }
+                        setDisputeArmed(false);
+                        disputeArmedAtRef.current = null;
+                        if (disputeTimerRef.current) {
+                          clearTimeout(disputeTimerRef.current);
+                          disputeTimerRef.current = null;
+                        }
+                        runAction("dispute", () => openDispute(burner, validRef));
+                      }}
+                    >
+                      {disputeArmed ? "Tocá de nuevo para abrir la disputa" : "Abrir una disputa"}
+                    </Button>
+                    {disputeArmed ? (
+                      <p className="text-center text-xs text-verde-mut">
+                        Un árbitro centralizado va a intervenir en el pedido. Se cancela sola en unos
+                        segundos.
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
               </>
             ) : null}

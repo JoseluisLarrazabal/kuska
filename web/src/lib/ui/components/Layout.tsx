@@ -3,10 +3,12 @@ import { Link } from "react-router-dom";
 
 interface LayoutProps {
   children: ReactNode;
+  /** Ensancha el contenido a `max-w-2xl` (pantalla de vendedor en laptop). Mobile no cambia. */
+  wide?: boolean;
 }
 
 /** Shell de página: header de marca + contenido angosto, mobile-first (~390px). */
-export function Layout({ children }: LayoutProps) {
+export function Layout({ children, wide }: LayoutProps) {
   return (
     <div className="min-h-dvh bg-hueso">
       <header className="flex items-center justify-between px-4 py-2 sm:px-6">
@@ -25,7 +27,7 @@ export function Layout({ children }: LayoutProps) {
           Panel demo
         </Link>
       </header>
-      <main className="mx-auto max-w-md px-4 pb-16 sm:px-6">{children}</main>
+      <main className={`mx-auto px-4 pb-16 sm:px-6 ${wide ? "max-w-2xl" : "max-w-md"}`}>{children}</main>
     </div>
   );
 }

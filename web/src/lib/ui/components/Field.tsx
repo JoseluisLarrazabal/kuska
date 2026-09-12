@@ -35,7 +35,7 @@ export function Field({ label, hint, error, monospace, className = "", id, ...re
         </p>
       ) : null}
       {error ? (
-        <p id={errorId} role="alert" className="text-xs font-medium text-terracota">
+        <p id={errorId} role="alert" className="text-xs font-medium text-terracota-ink">
           {error}
         </p>
       ) : null}

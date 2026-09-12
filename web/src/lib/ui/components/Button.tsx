@@ -12,7 +12,7 @@ const VARIANT_CLASSES: Record<Variant, string> = {
   primary: "bg-verde text-hueso hover:bg-verde-2 disabled:bg-verde-mut",
   secondary: "bg-transparent text-verde border border-verde hover:bg-verde/5 disabled:border-verde-mut disabled:text-verde-mut",
   ghost: "bg-transparent text-verde-mut hover:text-verde disabled:text-verde-mut/60",
-  danger: "bg-terracota text-hueso hover:brightness-110 disabled:bg-verde-mut",
+  danger: "bg-terracota-ink text-hueso hover:brightness-110 disabled:bg-verde-mut",
 };
 
 /** Botón de marca: pill, >=44px de alto (área táctil), foco visible. */

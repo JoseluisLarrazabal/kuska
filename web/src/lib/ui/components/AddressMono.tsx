@@ -25,13 +25,13 @@ export function AddressMono({ address, label, className = "" }: AddressMonoProps
   }
 
   return (
-    <span className={`inline-flex items-center gap-1.5 font-mono text-sm tabular-nums ${className}`}>
+    <span className={`inline-flex items-center gap-2 font-mono text-sm tabular-nums ${className}`}>
       {label ? <span className="text-verde-mut">{label}</span> : null}
       <span title={address}>{truncateHex(address)}</span>
       <button
         type="button"
         onClick={copy}
-        className="tap-target inline-flex h-6 w-6 items-center justify-center rounded text-verde-mut hover:text-verde"
+        className="tap-target-icon inline-flex h-9 w-9 items-center justify-center rounded text-verde-mut hover:text-verde"
         aria-label={copied ? "Dirección copiada" : "Copiar dirección"}
       >
         <CopyIcon size={14} />
@@ -41,7 +41,7 @@ export function AddressMono({ address, label, className = "" }: AddressMonoProps
           href={explorerUrl}
           target="_blank"
           rel="noreferrer"
-          className="tap-target inline-flex h-6 w-6 items-center justify-center rounded text-verde-mut hover:text-verde"
+          className="tap-target-icon inline-flex h-9 w-9 items-center justify-center rounded text-verde-mut hover:text-verde"
           aria-label="Ver en el explorer de HashKey Chain"
         >
           <ExternalLinkIcon size={14} />
