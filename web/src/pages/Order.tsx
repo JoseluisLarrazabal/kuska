@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
@@ -7,8 +7,9 @@ import { Button } from "../lib/ui/components/Button";
 import { StatusChip } from "../lib/ui/components/StatusChip";
 import { AmountMono } from "../lib/ui/components/AmountMono";
 import { AddressMono } from "../lib/ui/components/AddressMono";
+import { HashMono } from "../lib/ui/components/HashMono";
 import { Countdown } from "../lib/ui/components/Countdown";
-import { LockOpenIcon } from "../lib/ui/components/Icon";
+import { LockOpenIcon, UndoIcon } from "../lib/ui/components/Icon";
 import { useDeal } from "../lib/ui/useDeal";
 import { DEFAULT_DISPUTE_WINDOW_SECONDS, useDisputeWindow } from "../lib/ui/escrowConfig";
 import { DealState } from "../lib/escrow/read";
@@ -23,7 +24,8 @@ import type { RelayOutcome } from "../lib/ui/relayer";
 import { useNow } from "../lib/ui/useNow";
 import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
-import { trackOrder } from "../lib/ui/orderRegistry";
+import { endSentence, formatDeadline } from "../lib/ui/format";
+import { findTrackedOrder, trackOrder } from "../lib/ui/orderRegistry";
 
 const HEX32_RE = /^0x[0-9a-fA-F]{64}$/;
 
@@ -37,9 +39,18 @@ export default function Order() {
   const { ref } = useParams<{ ref: string }>();
   const [params] = useSearchParams();
   const highlightRelease = params.get("accion") === "liberar";
-  const item = params.get("item");
+  const itemParam = params.get("item");
 
   const validRef = ref && HEX32_RE.test(ref) ? (ref as Hex) : undefined;
+  // Si el link no trae `?item=` (p. ej. un link viejo, o un ref pegado a
+  // mano), buscamos el label guardado por `trackOrder` la última vez que
+  // este dispositivo vio este pedido con un item — sin esto, revisitar
+  // `/pedido/:ref` sin el query param mostraba el pedido sin referencia
+  // aunque este mismo dispositivo la hubiera visto antes.
+  const item = useMemo(
+    () => itemParam ?? (validRef ? findTrackedOrder(validRef)?.item : undefined),
+    [itemParam, validRef],
+  );
   const { data: deal, isLoading, isError, refetch } = useDeal(validRef);
   const { data: disputeWindow, isPlaceholderData: disputeWindowIsGuess } = useDisputeWindow();
   const now = useNow();
@@ -71,6 +82,7 @@ export default function Order() {
       : undefined;
 
   const disputeDeadline = deal ? deal.claimedAt + (disputeWindow ?? DEFAULT_DISPUTE_WINDOW_SECONDS) : undefined;
+  const canReleaseNow = canReleaseAfterWindow(disputeDeadline, disputeWindowIsGuess, now);
 
   async function runAction(name: string, run: () => Promise<RelayOutcome>) {
     setAction({ pending: name, error: null, lastTxHash: null });
@@ -87,7 +99,9 @@ export default function Order() {
     <Layout>
       <h1 className="mt-6 font-display text-[26px] font-medium text-verde">Estado del pedido</h1>
       {item ? <p className="mt-1 text-sm text-verde-mut">{item}</p> : null}
-      <p className="mt-1 font-mono text-xs text-verde-mut">{validRef}</p>
+      <div className="mt-1 text-xs text-verde-mut">
+        <HashMono value={validRef} />
+      </div>
 
       {isLoading ? (
         <div className="mt-8 rounded-card bg-blanco p-6 text-center text-sm text-verde-mut">
@@ -154,7 +168,7 @@ export default function Order() {
             ) : null}
           </div>
 
-          {highlightRelease && deal.state === DealState.DeliveryClaimed ? (
+          {highlightRelease && deal.state === DealState.DeliveryClaimed && role === "buyer" ? (
             <Banner kind="info" title="Escaneaste el QR del vendedor" className="mt-4">
               Confirmá la recepción para liberar el pago.
             </Banner>
@@ -168,22 +182,26 @@ export default function Order() {
 
           {action.lastTxHash ? (
             <Banner kind="success" title="Listo" className="mt-4">
-              <p className="font-mono text-xs">{action.lastTxHash}</p>
-              {txExplorerUrl(action.lastTxHash) ? (
-                <a href={txExplorerUrl(action.lastTxHash)} target="_blank" rel="noreferrer" className="underline">
-                  Ver en el explorer
-                </a>
-              ) : null}
+              <HashMono value={action.lastTxHash} href={txExplorerUrl(action.lastTxHash)} />
             </Banner>
           ) : null}
 
           {deal.state === DealState.Released ? (
-            <div className="mt-4 flex flex-col items-center gap-2 rounded-panel bg-verde-3 p-8 text-center text-hueso">
-              <LockOpenIcon size={32} className="text-terracota" />
-              <p className="font-display text-[26px] font-medium">Fondos liberados</p>
-              <AmountMono amount={deal.amount} size="lg" className="text-hueso" />
-              <p className="text-sm text-hueso/80">Entregado y pagado.</p>
-            </div>
+            <TerminalReceipt
+              icon={<LockOpenIcon size={32} className="text-terracota" />}
+              title="Fondos liberados"
+              amount={deal.amount}
+              caption="Entregado y pagado."
+            />
+          ) : null}
+
+          {deal.state === DealState.Refunded ? (
+            <TerminalReceipt
+              icon={<UndoIcon size={32} className="text-terracota" />}
+              title="Reembolso completado"
+              amount={deal.amount}
+              caption="Devuelto al comprador."
+            />
           ) : null}
 
           <div className="mt-6 flex flex-col gap-3">
@@ -204,6 +222,22 @@ export default function Order() {
               >
                 Ir a registrar la entrega
               </Link>
+            ) : null}
+
+            {deal.state === DealState.Funded && role === "buyer" ? (
+              canRequestRefund(deal, role, now) ? (
+                <p className="text-center text-sm text-verde-mut">
+                  Venció el plazo de entrega sin que el vendedor la registrara: ya podés
+                  pedir el reembolso.
+                </p>
+              ) : (
+                <p className="text-center text-sm text-verde-mut">
+                  {endSentence(
+                    `Esperando que el vendedor registre la entrega, antes de las ${formatDeadline(deal.deliveryDeadline, now)}`,
+                  )}{" "}
+                  Si vence el plazo sin que la registre, vas a poder pedir el reembolso.
+                </p>
+              )
             ) : null}
 
             {deal.state === DealState.Funded && role !== "buyer" && role !== "seller" ? (
@@ -232,8 +266,35 @@ export default function Order() {
               </>
             ) : null}
 
-            {deal.state === DealState.DeliveryClaimed &&
-            canReleaseAfterWindow(disputeDeadline, disputeWindowIsGuess, now) ? (
+            {deal.state === DealState.DeliveryClaimed && role !== "buyer" ? (
+              <p className="text-center text-sm text-verde-mut">
+                {role === "seller" ? (
+                  "Ya registraste la entrega. Pedile al comprador que escanee el QR (o abra este link) para confirmar la recepción y liberar el pago. Si no confirma antes de que venza la ventana de disputa, vas a poder liberar el pago igual."
+                ) : (
+                  // Ni comprador ni vendedor de este pedido, con o sin cuenta local.
+                  // Escenario típico de la demo en vivo: el comprador escaneó el QR
+                  // del vendedor con la CÁMARA NATIVA del teléfono (no el lector de
+                  // Kuska), que abre esto en un navegador sin la cuenta del
+                  // comprador — o con la cuenta de OTRO rol ya usada antes en ese
+                  // mismo dispositivo. En ningún caso se crea una cuenta ni se
+                  // ofrece firmar acá; nunca se dice "no hay nada para hacer" porque
+                  // el botón de liberar por ventana vencida (abajo) puede seguir
+                  // disponible para cualquier cuenta.
+                  <>
+                    {burner
+                      ? "Esta cuenta de este dispositivo no es la que compró este pedido."
+                      : "Este navegador no tiene la cuenta con la que se compró este pedido."}{" "}
+                    Abrí este link en el navegador/dispositivo donde compraste, o escaneá el
+                    QR con el lector de Kuska (no con la cámara del teléfono).
+                    {canReleaseNow
+                      ? " Venció la ventana de disputa: cualquiera puede liberar el pago con el botón de abajo."
+                      : ""}
+                  </>
+                )}
+              </p>
+            ) : null}
+
+            {deal.state === DealState.DeliveryClaimed && canReleaseNow ? (
               <Button
                 variant="secondary"
                 busy={action.pending === "auto-release"}
@@ -253,5 +314,31 @@ export default function Order() {
         </>
       ) : null}
     </Layout>
+  );
+}
+
+/**
+ * Panel de estado terminal (docs/brand.md "Fondos liberados"): mismo look
+ * para `Released` y `Refunded` — solo cambia el ícono, el título y el
+ * caption — para que los dos desenlaces lean consistentes entre sí.
+ */
+function TerminalReceipt({
+  icon,
+  title,
+  amount,
+  caption,
+}: {
+  icon: ReactNode;
+  title: string;
+  amount: bigint;
+  caption: string;
+}) {
+  return (
+    <div className="mt-4 flex flex-col items-center gap-2 rounded-panel bg-verde-3 p-8 text-center text-hueso">
+      {icon}
+      <p className="font-display text-[26px] font-medium">{title}</p>
+      <AmountMono amount={amount} size="lg" className="text-hueso" />
+      <p className="text-sm text-hueso/80">{caption}</p>
+    </div>
   );
 }

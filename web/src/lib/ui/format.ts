@@ -1,4 +1,4 @@
-import { formatUnits, parseUnits } from "viem";
+import { formatEther, formatUnits, parseUnits } from "viem";
 
 /**
  * `MockUSD` y USDC.e usan 6 decimales (docs/escrow-interface.md §2). No hay
@@ -42,6 +42,56 @@ export function formatDemoUsd(amount: bigint): string {
   return `${intPart}.${dec2}`;
 }
 
+/**
+ * Redondea la representación decimal en string `intPart.decPart` a
+ * `decimals` posiciones (redondeo "half up", como hace la gente), devuelta
+ * como string sin ceros finales. Trabaja con `BigInt` sobre los dígitos
+ * (nunca con `Number`) para no perder precisión con los 18 decimales de
+ * wei — un `Number(formatEther(wei))` puede desbordar la precisión de un
+ * float64 para balances grandes.
+ */
+function roundDecimalString(intPart: string, decPart: string, decimals: number): string {
+  const safeDecimals = Math.max(0, decimals);
+  const padded = decPart.padEnd(safeDecimals + 1, "0");
+  const keep = padded.slice(0, safeDecimals);
+  const roundUp = padded.charCodeAt(safeDecimals) >= "5".charCodeAt(0);
+  const combinedDigits = `${intPart}${keep}`;
+  const roundedDigits = (BigInt(combinedDigits) + (roundUp ? 1n : 0n))
+    .toString()
+    .padStart(combinedDigits.length, "0");
+  const cut = roundedDigits.length - keep.length;
+  const newInt = cut > 0 ? roundedDigits.slice(0, cut) : "0";
+  const newDec = (cut > 0 ? roundedDigits.slice(cut) : roundedDigits.padStart(keep.length, "0")).replace(/0+$/, "");
+  return newDec.length > 0 ? `${newInt}.${newDec}` : newInt;
+}
+
+/**
+ * Formatea wei de HSK (18 decimales) a un monto legible: hasta
+ * `sigDecimals` dígitos decimales *significativos* — contados desde el
+ * primer dígito no-cero después del punto, no desde el punto mismo — sin
+ * notación científica y sin redondear a "0" un saldo chico pero real (p. ej.
+ * `0.000001 HSK` no se muestra como `0.0000`, que parecería saldo vacío).
+ * Antes se mostraba `formatEther(hsk)` crudo (hasta 18 decimales, p. ej.
+ * `0.099480426354340893 HSK`), ilegible en una fila de saldo de la demo.
+ */
+export function formatHskAmount(wei: bigint, sigDecimals = 4): string {
+  if (wei === 0n) return "0";
+  const negative = wei < 0n;
+  const full = formatEther(negative ? -wei : wei);
+  const [intPart = "0", decPart = ""] = full.split(".");
+
+  const decimalsToKeep =
+    intPart !== "0"
+      ? sigDecimals
+      : (() => {
+          const firstNonZero = [...decPart].findIndex((d) => d !== "0");
+          return firstNonZero === -1 ? sigDecimals : firstNonZero + sigDecimals;
+        })();
+
+  const rounded = roundDecimalString(intPart, decPart, decimalsToKeep);
+  return negative && rounded !== "0" ? `-${rounded}` : rounded;
+}
+
 /** Trunca una dirección/hash 0x… a `0x1234…abcd`. */
 export function truncateHex(value: string, chars = 4): string {
   if (value.length <= chars * 2 + 3) return value;
@@ -64,6 +114,35 @@ export function formatUnixTime(unixSeconds: number | bigint): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+/**
+ * Hora local legible, con fecha si `unixSeconds` no cae en el mismo día que
+ * `nowSeconds` (p. ej. "13 sept, 22:30" en vez de solo "22:30"). Un plazo de
+ * entrega que vence otro día (no solo dentro de las próximas horas) se
+ * mostraba antes solo con la hora, sin pista de qué día era.
+ */
+export function formatDeadline(unixSeconds: number | bigint, nowSeconds: number): string {
+  const date = new Date(Number(unixSeconds) * 1000);
+  const now = new Date(nowSeconds * 1000);
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const time = date.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+  if (sameDay) return time;
+  const day = date.toLocaleDateString("es-AR", { day: "numeric", month: "short" });
+  return `${day}, ${time}`;
+}
+
+/**
+ * Termina una oración con un solo punto final, sin duplicarlo si `text` ya
+ * termina en uno (p. ej. una hora en formato 12h que el `Intl` local
+ * devuelve como "10:30 p. m.": concatenar un "." literal después daba
+ * "p. m..").
+ */
+export function endSentence(text: string): string {
+  return /\.\s*$/.test(text) ? text : `${text}.`;
 }
 
 /** Segundos Unix actuales (para countdowns). */
