@@ -7,15 +7,17 @@ import { Banner } from "../lib/ui/components/Banner";
 import { StatusChip } from "../lib/ui/components/StatusChip";
 import { AmountMono } from "../lib/ui/components/AmountMono";
 import { AddressMono } from "../lib/ui/components/AddressMono";
+import { HashMono } from "../lib/ui/components/HashMono";
 import { Countdown } from "../lib/ui/components/Countdown";
 import { QrCode } from "../lib/ui/components/QrCode";
 import { LockOpenIcon } from "../lib/ui/components/Icon";
 import { getOrCreateAccount } from "../lib/burner";
 import { useDeal } from "../lib/ui/useDeal";
+import { useSellerDeals, mergeSellerOrderRefs } from "../lib/ui/useSellerDeals";
 import { DEFAULT_DISPUTE_WINDOW_SECONDS, useDisputeWindow } from "../lib/ui/escrowConfig";
 import { DealState } from "../lib/escrow/read";
 import { claimDelivery } from "../lib/ui/dealActions";
-import { buildConfirmUrl, parseOrderRefFromText } from "../lib/ui/orderLink";
+import { buildConfirmUrl, parseItemFromText, parseOrderRefFromText } from "../lib/ui/orderLink";
 import { listTrackedOrders, trackOrder, untrackOrder, type TrackedOrder } from "../lib/ui/orderRegistry";
 
 export default function Seller() {
@@ -23,6 +25,22 @@ export default function Seller() {
   const [orders, setOrders] = useState<TrackedOrder[]>(() => listTrackedOrders());
   const [addValue, setAddValue] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
+  // Refs "escondidos" de la vista para esta sesión (botón "Quitar de la
+  // lista" sobre un pedido que solo vino del descubrimiento on-chain, no de
+  // `orderRegistry`): no hay forma de "borrarlo" de la cadena, así que se
+  // oculta acá mientras dure la pestaña. Si la página se recarga, vuelve a
+  // aparecer (sigue siendo un deal real de este vendedor) — comportamiento
+  // intencional, ver `useSellerDeals.ts`.
+  const [hiddenRefs, setHiddenRefs] = useState<Set<string>>(() => new Set());
+
+  // Descubrimiento on-chain: lee el evento `Deposited` filtrado por
+  // `seller == cuenta local` (ver `useSellerDeals.ts`) para no depender
+  // enteramente de que alguien pegue a mano el link del comprador — riesgo
+  // real en la demo en vivo (una persona pasando un link de celular a
+  // laptop). Es best-effort: si falla, `isError` se usa más abajo para un
+  // aviso chico, sin bloquear la página — la lista trackeada a mano sigue
+  // funcionando igual que antes.
+  const { data: discoveredRefs, isError: discoveryFailed } = useSellerDeals(seller.address);
 
   function refreshList() {
     setOrders(listTrackedOrders());
@@ -34,7 +52,8 @@ export default function Seller() {
       setAddError("No encontramos un código válido en eso que pegaste.");
       return;
     }
-    trackOrder(ref, { role: "seller" });
+    const item = parseItemFromText(addValue);
+    trackOrder(ref, item ? { role: "seller", item } : { role: "seller" });
     setAddValue("");
     setAddError(null);
     refreshList();
@@ -42,8 +61,23 @@ export default function Seller() {
 
   function removeOrder(ref: Hex) {
     untrackOrder(ref);
+    setHiddenRefs((prev) => new Set(prev).add(ref.toLowerCase()));
     refreshList();
   }
+
+  const trackedRefs = useMemo(() => orders.map((o) => o.ref), [orders]);
+  const displayOrders: TrackedOrder[] = useMemo(() => {
+    const merged = mergeSellerOrderRefs(discoveredRefs ?? [], trackedRefs).filter(
+      (ref) => !hiddenRefs.has(ref.toLowerCase()),
+    );
+    return merged.map((ref) => {
+      const tracked = orders.find((o) => o.ref.toLowerCase() === ref.toLowerCase());
+      // Un ref descubierto en la cadena que todavía no está en `orderRegistry`
+      // (nadie lo agregó a mano ni lo visitó por link) no tiene `item` ni
+      // `addedAt` real — se muestra igual, solo sin label humano.
+      return tracked ?? { ref, addedAt: 0, role: "seller" };
+    });
+  }, [discoveredRefs, trackedRefs, hiddenRefs, orders]);
 
   return (
     <Layout>
@@ -52,7 +86,13 @@ export default function Seller() {
         Cuenta de vendedor: <AddressMono address={seller.address} />
       </p>
 
-      <div className="mt-5 flex flex-col gap-2 rounded-card bg-blanco p-4">
+      <form
+        className="mt-5 flex flex-col gap-2 rounded-card bg-blanco p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          addOrder();
+        }}
+      >
         <Field
           label="Agregar un pedido"
           monospace
@@ -61,19 +101,26 @@ export default function Seller() {
           placeholder="0x… (o pegá el link que te pasó el comprador)"
           error={addError ?? undefined}
         />
-        <Button variant="secondary" onClick={addOrder} disabled={addValue.trim().length === 0}>
+        <Button type="submit" variant="secondary" disabled={addValue.trim().length === 0}>
           Agregar
         </Button>
-      </div>
+      </form>
 
-      {orders.length === 0 ? (
+      {discoveryFailed ? (
+        <p className="mt-2 text-xs text-verde-mut">
+          No pudimos leer automáticamente tus pedidos desde la cadena ahora mismo —
+          mostrando solo los que agregaste a mano.
+        </p>
+      ) : null}
+
+      {displayOrders.length === 0 ? (
         <p className="mt-6 text-center text-sm text-verde-mut">
-          Todavía no tenés pedidos. Pedile al comprador el link de su pedido y agregalo
-          arriba.
+          Todavía no tenés pedidos. Se detectan automáticamente los que te llegan como
+          vendedor, o pedile al comprador el link de su pedido y agregalo arriba.
         </p>
       ) : (
         <div className="mt-6 flex flex-col gap-3">
-          {orders.map((order) => (
+          {displayOrders.map((order) => (
             <SellerOrderCard
               key={order.ref}
               order={order}
@@ -129,7 +176,9 @@ function SellerOrderCard({
             Quitar de la lista
           </button>
         </div>
-        <p className="mt-1 font-mono text-xs text-verde-mut">{order.ref}</p>
+        <div className="mt-1 text-xs text-verde-mut">
+          <HashMono value={order.ref} />
+        </div>
         <button
           type="button"
           onClick={() => refetch()}
@@ -163,7 +212,9 @@ function SellerOrderCard({
       </div>
 
       {order.item ? <p className="mt-2 text-sm text-verde">{order.item}</p> : null}
-      <p className="mt-1 font-mono text-xs text-verde-mut">{order.ref}</p>
+      <div className="mt-1 text-xs text-verde-mut">
+        <HashMono value={order.ref} />
+      </div>
       {isError ? (
         <p className="mt-1 text-xs text-terracota">
           No pudimos actualizar este pedido en el último intento — mostrando el último estado

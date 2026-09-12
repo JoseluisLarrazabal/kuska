@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
@@ -7,8 +7,9 @@ import { Button } from "../lib/ui/components/Button";
 import { StatusChip } from "../lib/ui/components/StatusChip";
 import { AmountMono } from "../lib/ui/components/AmountMono";
 import { AddressMono } from "../lib/ui/components/AddressMono";
+import { HashMono } from "../lib/ui/components/HashMono";
 import { Countdown } from "../lib/ui/components/Countdown";
-import { LockOpenIcon } from "../lib/ui/components/Icon";
+import { LockOpenIcon, UndoIcon } from "../lib/ui/components/Icon";
 import { useDeal } from "../lib/ui/useDeal";
 import { DEFAULT_DISPUTE_WINDOW_SECONDS, useDisputeWindow } from "../lib/ui/escrowConfig";
 import { DealState } from "../lib/escrow/read";
@@ -23,6 +24,7 @@ import type { RelayOutcome } from "../lib/ui/relayer";
 import { useNow } from "../lib/ui/useNow";
 import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
+import { formatUnixTime } from "../lib/ui/format";
 import { trackOrder } from "../lib/ui/orderRegistry";
 
 const HEX32_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -87,7 +89,9 @@ export default function Order() {
     <Layout>
       <h1 className="mt-6 font-display text-[26px] font-medium text-verde">Estado del pedido</h1>
       {item ? <p className="mt-1 text-sm text-verde-mut">{item}</p> : null}
-      <p className="mt-1 font-mono text-xs text-verde-mut">{validRef}</p>
+      <div className="mt-1 text-xs text-verde-mut">
+        <HashMono value={validRef} />
+      </div>
 
       {isLoading ? (
         <div className="mt-8 rounded-card bg-blanco p-6 text-center text-sm text-verde-mut">
@@ -168,22 +172,26 @@ export default function Order() {
 
           {action.lastTxHash ? (
             <Banner kind="success" title="Listo" className="mt-4">
-              <p className="font-mono text-xs">{action.lastTxHash}</p>
-              {txExplorerUrl(action.lastTxHash) ? (
-                <a href={txExplorerUrl(action.lastTxHash)} target="_blank" rel="noreferrer" className="underline">
-                  Ver en el explorer
-                </a>
-              ) : null}
+              <HashMono value={action.lastTxHash} href={txExplorerUrl(action.lastTxHash)} />
             </Banner>
           ) : null}
 
           {deal.state === DealState.Released ? (
-            <div className="mt-4 flex flex-col items-center gap-2 rounded-panel bg-verde-3 p-8 text-center text-hueso">
-              <LockOpenIcon size={32} className="text-terracota" />
-              <p className="font-display text-[26px] font-medium">Fondos liberados</p>
-              <AmountMono amount={deal.amount} size="lg" className="text-hueso" />
-              <p className="text-sm text-hueso/80">Entregado y pagado.</p>
-            </div>
+            <TerminalReceipt
+              icon={<LockOpenIcon size={32} className="text-terracota" />}
+              title="Fondos liberados"
+              amount={deal.amount}
+              caption="Entregado y pagado."
+            />
+          ) : null}
+
+          {deal.state === DealState.Refunded ? (
+            <TerminalReceipt
+              icon={<UndoIcon size={32} className="text-terracota" />}
+              title="Reembolso completado"
+              amount={deal.amount}
+              caption="Devuelto al comprador."
+            />
           ) : null}
 
           <div className="mt-6 flex flex-col gap-3">
@@ -204,6 +212,14 @@ export default function Order() {
               >
                 Ir a registrar la entrega
               </Link>
+            ) : null}
+
+            {deal.state === DealState.Funded && role === "buyer" ? (
+              <p className="text-center text-sm text-verde-mut">
+                Esperando que el vendedor registre la entrega, antes de las{" "}
+                {formatUnixTime(deal.deliveryDeadline)}. Si vence el plazo sin que la
+                registre, vas a poder pedir el reembolso.
+              </p>
             ) : null}
 
             {deal.state === DealState.Funded && role !== "buyer" && role !== "seller" ? (
@@ -232,6 +248,20 @@ export default function Order() {
               </>
             ) : null}
 
+            {deal.state === DealState.DeliveryClaimed && role !== "buyer" ? (
+              <p className="text-center text-sm text-verde-mut">
+                {!burner
+                  ? // Escenario típico de la demo en vivo: el comprador escaneó el QR
+                    // del vendedor con la CÁMARA NATIVA del teléfono (no el lector de
+                    // Kuska), que abre esto en un navegador sin la cuenta del
+                    // comprador. No se crea ninguna cuenta ni se ofrece firmar acá.
+                    "Este navegador no tiene la cuenta con la que se compró este pedido. Abrí este link en el navegador/dispositivo donde compraste, o escaneá el QR con el lector de Kuska (no con la cámara del teléfono)."
+                  : role === "seller"
+                    ? "Ya registraste la entrega. Pedile al comprador que escanee el QR (o abra este link) para confirmar la recepción y liberar el pago. Si no confirma antes de que venza la ventana de disputa, vas a poder liberar el pago igual."
+                    : "Este pedido no es tuyo — no hay nada para hacer acá con esta cuenta."}
+              </p>
+            ) : null}
+
             {deal.state === DealState.DeliveryClaimed &&
             canReleaseAfterWindow(disputeDeadline, disputeWindowIsGuess, now) ? (
               <Button
@@ -253,5 +283,31 @@ export default function Order() {
         </>
       ) : null}
     </Layout>
+  );
+}
+
+/**
+ * Panel de estado terminal (docs/brand.md "Fondos liberados"): mismo look
+ * para `Released` y `Refunded` — solo cambia el ícono, el título y el
+ * caption — para que los dos desenlaces lean consistentes entre sí.
+ */
+function TerminalReceipt({
+  icon,
+  title,
+  amount,
+  caption,
+}: {
+  icon: ReactNode;
+  title: string;
+  amount: bigint;
+  caption: string;
+}) {
+  return (
+    <div className="mt-4 flex flex-col items-center gap-2 rounded-panel bg-verde-3 p-8 text-center text-hueso">
+      {icon}
+      <p className="font-display text-[26px] font-medium">{title}</p>
+      <AmountMono amount={amount} size="lg" className="text-hueso" />
+      <p className="text-sm text-hueso/80">{caption}</p>
+    </div>
   );
 }
