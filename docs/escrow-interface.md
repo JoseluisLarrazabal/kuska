@@ -147,7 +147,7 @@ event DisputeResolved(bytes32 indexed orderRef, bool toSeller);
 
 **Pipeline obligatorio:**
 1. validar el esquema;
-1.5. verificar (memoizado por proceso) que la dirección del escrow tenga bytecode desplegado — si no, `503 MISCONFIGURED` sin mandar ninguna tx;
+1.5. verificar (memoizado por proceso, solo el `true` — ver `contractGuard.ts`) que la dirección del escrow tenga bytecode desplegado — si no, `503 MISCONFIGURED` sin mandar ninguna tx;
 2. verificar off-chain la firma EIP-712 contra el firmante esperado. Para claim, cancel, release y dispute se lee `getDeal` y se usa `deal.seller` o `deal.buyer`;
 3. `simulateContract`;
 4. `writeContract`;
@@ -167,11 +167,18 @@ event DisputeResolved(bytes32 indexed orderRef, bool toSeller);
 
 ### `POST /api/faucet`
 - Body `{ to }`: llama `MockUSD.faucet(to)` (simular primero). Antes de simular, verifica
-  (memoizado por proceso) que la dirección del token tenga bytecode desplegado.
+  (memoizado por proceso, solo el `true` — ver `contractGuard.ts`) que la dirección del
+  token tenga bytecode desplegado.
+- Tras `writeContract`, espera el receipt (`waitForTransactionReceipt`, timeout 20 s, igual
+  que `/api/relay` §6) antes de responder: una tx que revierte on-chain no puede reportarse
+  como éxito.
 - Respuestas:
-  - `200 { hash }`;
-  - `409 { code: "FAUCET_COOLDOWN", availableAt }`;
+  - `200 { hash, blockNumber, status: "success" }`;
+  - `409 { code: "FAUCET_COOLDOWN", availableAt }` (simulación revertida por cooldown) o
+    `409 { code: "TX_REVERTED", hash }` (la tx minada revirtió igual);
+  - `502 { code: "RPC_ERROR" }`;
   - `503 { code: "MISCONFIGURED" }` (la dirección del token no tiene bytecode);
+  - `504 { code: "RECEIPT_TIMEOUT", hash }`;
   - en mainnet → `404`.
 
 ### `GET /api/health`

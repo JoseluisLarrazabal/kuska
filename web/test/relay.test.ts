@@ -273,6 +273,28 @@ describe("handleRelay", () => {
 
     expect(publicClient.getCode).toHaveBeenCalledTimes(1);
   });
+
+  // -- fix caché asimétrica: NO cachear `false` ---------------------------
+
+  it("NO cachea un `false`: un getCode que devuelve '0x' se reconsulta en la próxima llamada, y si luego hay bytecode la request pasa", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.getCode.mockResolvedValueOnce("0x").mockResolvedValueOnce("0x1234");
+
+    const first = await handleRelay(
+      { action: "refundExpired", params: { orderRef: ORDER_REF } },
+      deps,
+    );
+    expect(first).toEqual({ status: 503, body: { code: "MISCONFIGURED" } });
+
+    const second = await handleRelay(
+      { action: "refundExpired", params: { orderRef: ORDER_REF } },
+      deps,
+    );
+
+    expect(publicClient.getCode).toHaveBeenCalledTimes(2);
+    expect(second.status).toBe(200);
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("relayRequestSchema — validación de firmas (fix ERC-1271)", () => {

@@ -14,6 +14,7 @@ function createDeps(overrides: Partial<FaucetDeps> = {}) {
     simulateContract: vi.fn().mockResolvedValue({ request: { fake: "request" } }),
     // bytecode no vacío por defecto: el token "es un contrato" (fix MISCONFIGURED)
     getCode: vi.fn().mockResolvedValue("0x1234"),
+    waitForTransactionReceipt: vi.fn().mockResolvedValue({ blockNumber: 7n, status: "success" }),
   };
   const walletClient = {
     writeContract: vi.fn().mockResolvedValue("0xhash000000000000000000000000000000000000000000000000000000000003"),
@@ -28,6 +29,7 @@ function createDeps(overrides: Partial<FaucetDeps> = {}) {
     relayerAccount,
     tokenAddress: TOKEN_ADDRESS,
     chainId: 133,
+    receiptTimeoutMs: 20_000,
     ...overrides,
   } satisfies FaucetDeps;
 
@@ -48,7 +50,7 @@ describe("handleFaucet", () => {
     expect(publicClient.simulateContract).not.toHaveBeenCalled();
   });
 
-  it("200 con hash en testnet (chainId 133)", async () => {
+  it("200 con hash y blockNumber en testnet (chainId 133)", async () => {
     const { deps } = createDeps();
 
     const result = await handleFaucet({ to: "0x3333333333333333333333333333333333333333" }, deps);
@@ -56,6 +58,8 @@ describe("handleFaucet", () => {
     expect(result.status).toBe(200);
     if (result.status === 200) {
       expect(result.body.hash).toMatch(/^0x/);
+      expect(result.body.status).toBe("success");
+      expect(result.body.blockNumber).toBe("7");
     }
   });
 
@@ -79,5 +83,41 @@ describe("handleFaucet", () => {
     expect(result).toEqual({ status: 503, body: { code: "MISCONFIGURED" } });
     expect(publicClient.simulateContract).not.toHaveBeenCalled();
     expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
+  // -- fix TX_REVERTED / RECEIPT_TIMEOUT (esperar el receipt) -------------
+
+  it("409 TX_REVERTED con el hash cuando el receipt indica que la tx revirtió", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.waitForTransactionReceipt.mockResolvedValue({
+      blockNumber: 7n,
+      status: "reverted",
+    });
+
+    const result = await handleFaucet(
+      { to: "0x3333333333333333333333333333333333333333" },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: 409,
+      body: { code: "TX_REVERTED", hash: expect.stringMatching(/^0x/) },
+    });
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(1);
+  });
+
+  it("504 RECEIPT_TIMEOUT con el hash cuando el receipt tarda demasiado", async () => {
+    const { deps, publicClient } = createDeps();
+    publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("timeout"));
+
+    const result = await handleFaucet(
+      { to: "0x3333333333333333333333333333333333333333" },
+      deps,
+    );
+
+    expect(result.status).toBe(504);
+    if (result.status === 504) {
+      expect(result.body.hash).toMatch(/^0x/);
+    }
   });
 });
