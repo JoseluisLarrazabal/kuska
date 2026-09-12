@@ -12,7 +12,7 @@ import { QrCode } from "../lib/ui/components/QrCode";
 import { LockOpenIcon } from "../lib/ui/components/Icon";
 import { getOrCreateAccount } from "../lib/burner";
 import { useDeal } from "../lib/ui/useDeal";
-import { useDisputeWindow } from "../lib/ui/escrowConfig";
+import { DEFAULT_DISPUTE_WINDOW_SECONDS, useDisputeWindow } from "../lib/ui/escrowConfig";
 import { DealState } from "../lib/escrow/read";
 import { claimDelivery } from "../lib/ui/dealActions";
 import { buildConfirmUrl, parseOrderRefFromText } from "../lib/ui/orderLink";
@@ -96,7 +96,7 @@ function SellerOrderCard({
   seller: ReturnType<typeof getOrCreateAccount>;
   onRemove: () => void;
 }) {
-  const { data: deal, isLoading, refetch } = useDeal(order.ref);
+  const { data: deal, isLoading, isError, refetch } = useDeal(order.ref);
   const { data: disputeWindow } = useDisputeWindow();
   const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,11 +113,38 @@ function SellerOrderCard({
     }
   }
 
+  if (isError) {
+    return (
+      <div className="rounded-card bg-blanco p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-verde-mut">No pudimos leer este pedido.</span>
+          <button type="button" onClick={onRemove} className="tap-target text-xs text-verde-mut underline">
+            Quitar de la lista
+          </button>
+        </div>
+        <p className="mt-1 font-mono text-xs text-verde-mut">{order.ref}</p>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          className="tap-target mt-2 text-sm font-medium text-verde underline"
+        >
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
   if (isLoading || !deal) {
     return <div className="rounded-card bg-blanco p-4 text-sm text-verde-mut">Cargando…</div>;
   }
 
-  const disputeDeadline = deal.claimedAt + (disputeWindow ?? 90n);
+  const disputeDeadline = deal.claimedAt + (disputeWindow ?? DEFAULT_DISPUTE_WINDOW_SECONDS);
+  // El comprador puede haber agregado este mismo pedido a su lista de
+  // "Vendedor" (o quedar trackeado ahí por otro motivo): solo mostrar las
+  // acciones de vendedor cuando la cuenta local de ESTE dispositivo es
+  // realmente `deal.seller` on-chain — nunca ofrecer "Registrar entrega" para
+  // un pedido ajeno.
+  const isLocalSeller = deal.seller.toLowerCase() === seller.address.toLowerCase();
 
   return (
     <div className="rounded-card bg-blanco p-4">
@@ -139,13 +166,20 @@ function SellerOrderCard({
         <AmountMono amount={deal.amount} size="sm" />
       </div>
 
+      {!isLocalSeller ? (
+        <Banner kind="info" className="mt-3">
+          Este dispositivo no es el vendedor de este pedido — no podés registrar la entrega
+          desde acá.
+        </Banner>
+      ) : null}
+
       {error ? (
         <Banner kind="error" className="mt-3">
           {error}
         </Banner>
       ) : null}
 
-      {deal.state === DealState.Funded ? (
+      {deal.state === DealState.Funded && isLocalSeller ? (
         <Button className="mt-3 w-full" busy={claiming} onClick={registerDelivery}>
           Registrar entrega
         </Button>

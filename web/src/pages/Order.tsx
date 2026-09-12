@@ -10,7 +10,7 @@ import { AddressMono } from "../lib/ui/components/AddressMono";
 import { Countdown } from "../lib/ui/components/Countdown";
 import { LockOpenIcon } from "../lib/ui/components/Icon";
 import { useDeal } from "../lib/ui/useDeal";
-import { useDisputeWindow } from "../lib/ui/escrowConfig";
+import { DEFAULT_DISPUTE_WINDOW_SECONDS, useDisputeWindow } from "../lib/ui/escrowConfig";
 import { DealState } from "../lib/escrow/read";
 import { getAccount } from "../lib/burner";
 import {
@@ -20,7 +20,8 @@ import {
   releaseAfterWindow,
 } from "../lib/ui/dealActions";
 import type { RelayOutcome } from "../lib/ui/relayer";
-import { nowSeconds } from "../lib/ui/format";
+import { useNow } from "../lib/ui/useNow";
+import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { trackOrder } from "../lib/ui/orderRegistry";
 
@@ -40,7 +41,8 @@ export default function Order() {
 
   const validRef = ref && HEX32_RE.test(ref) ? (ref as Hex) : undefined;
   const { data: deal, isLoading, isError, refetch } = useDeal(validRef);
-  const { data: disputeWindow } = useDisputeWindow();
+  const { data: disputeWindow, isPlaceholderData: disputeWindowIsGuess } = useDisputeWindow();
+  const now = useNow();
   const [action, setAction] = useState<ActionState>({ pending: null, error: null, lastTxHash: null });
 
   // se registra el link visitado: sirve para volver a encontrarlo desde /vendedor
@@ -68,7 +70,7 @@ export default function Order() {
           : undefined
       : undefined;
 
-  const disputeDeadline = deal ? deal.claimedAt + (disputeWindow ?? 90n) : undefined;
+  const disputeDeadline = deal ? deal.claimedAt + (disputeWindow ?? DEFAULT_DISPUTE_WINDOW_SECONDS) : undefined;
 
   async function runAction(name: string, run: () => Promise<RelayOutcome>) {
     setAction({ pending: name, error: null, lastTxHash: null });
@@ -172,7 +174,7 @@ export default function Order() {
           ) : null}
 
           <div className="mt-6 flex flex-col gap-3">
-            {deal.state === DealState.Funded && role === "buyer" && nowSeconds() > Number(deal.deliveryDeadline) ? (
+            {canRequestRefund(deal, role, now) ? (
               <Button
                 variant="danger"
                 busy={action.pending === "refund"}
@@ -205,7 +207,7 @@ export default function Order() {
                 >
                   Confirmar recepción y liberar el pago
                 </Button>
-                {disputeDeadline !== undefined && nowSeconds() < Number(disputeDeadline) ? (
+                {canOpenDisputeWindow(disputeDeadline, disputeWindowIsGuess, now) ? (
                   <Button
                     variant="secondary"
                     busy={action.pending === "dispute"}
@@ -218,8 +220,7 @@ export default function Order() {
             ) : null}
 
             {deal.state === DealState.DeliveryClaimed &&
-            disputeDeadline !== undefined &&
-            nowSeconds() >= Number(disputeDeadline) ? (
+            canReleaseAfterWindow(disputeDeadline, disputeWindowIsGuess, now) ? (
               <Button
                 variant="secondary"
                 busy={action.pending === "auto-release"}
