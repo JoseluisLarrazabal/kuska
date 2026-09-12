@@ -9,8 +9,15 @@ export function findRevertedError(err: unknown): ContractFunctionRevertedError |
   return undefined;
 }
 
-/** Heurística: ¿el error del RPC es por un nonce desincronizado? */
+/**
+ * Heurística: ¿el error del RPC amerita reintentar con un nonce "pending"
+ * fresco? Cubre errores de nonce desincronizado ("nonce too low", "nonce too
+ * high", etc., todos contienen "nonce") y de reemplazo de tx pendiente
+ * ("replacement transaction underpriced" / "replacement underpriced"), que no
+ * contienen la palabra "nonce" pero se resuelven de la misma forma: pedir un
+ * nonce "pending" nuevo y reintentar.
+ */
 export function isNonceError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /nonce/i.test(message);
+  return /nonce/i.test(message) || /replacement.*underpriced/i.test(message);
 }

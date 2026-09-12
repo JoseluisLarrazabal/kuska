@@ -17,6 +17,7 @@ import {
   buildDispute,
 } from "../src/lib/escrow/typedData";
 import { findRevertedError, isNonceError } from "./viemErrors";
+import { isContractAddress } from "./contractGuard";
 
 // ---------------------------------------------------------------------------
 // Esquemas por acción (docs/escrow-interface.md §6). uint256/uint64 viajan
@@ -25,8 +26,19 @@ import { findRevertedError, isNonceError } from "./viemErrors";
 
 const hexBytes32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/, "bytes32 inválido");
 const hexAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "dirección inválida");
-// firma ECDSA estándar (65 bytes / 130 hex) o compacta EIP-2098 (64 bytes / 128 hex)
-const hexSignature = z.string().regex(/^0x[0-9a-fA-F]{128,130}$/, "firma inválida");
+// Firma flexible para authSig/sellerSig/buyerSig: cualquier hex `0x` de
+// longitud PAR (cada par de hex es un byte completo), con un mínimo razonable
+// (64 hex = 32 bytes) y un máximo defensivo (8192 hex = 4096 bytes). No fijar
+// esto a 64-65 bytes (ECDSA) rompería firmas ERC-1271 de smart accounts, que
+// son de longitud arbitraria.
+const hexSignature = z
+  .string()
+  .regex(/^0x(?:[0-9a-fA-F]{2}){32,4096}$/, "firma inválida (hex par, 64-8192 caracteres)");
+// firma del permit (EIP-2612): siempre EOA, se descompone en v/r/s vía
+// `parseSignature`, así que sí debe ser exactamente 65 bytes (130 hex).
+const permitSignature = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{130}$/, "firma de permit inválida (esperado 65 bytes)");
 const decimalString = z
   .string()
   .regex(/^\d+$/, "debe ser un entero decimal en formato string")
@@ -41,7 +53,7 @@ const depositParamsSchema = z.object({
   authDeadline: decimalString,
   authSig: hexSignature,
   permitDeadline: decimalString,
-  permitSig: hexSignature,
+  permitSig: permitSignature,
 });
 
 const sellerActionParamsSchema = z.object({
@@ -84,7 +96,7 @@ export interface RelayDeps {
   chainId: number;
   /** default 20_000 ms (docs §6) */
   receiptTimeoutMs?: number;
-  /** default 3 (docs §6) */
+  /** default 2 (docs §6) */
   maxNonceRetries?: number;
 }
 
@@ -96,7 +108,9 @@ export type RelayResponse =
   | { status: 200; body: { hash: Hex; blockNumber: string; status: "success" } }
   | { status: 400; body: { code: "INVALID_REQUEST" | "INVALID_SIGNATURE" } }
   | { status: 409; body: { code: "SIMULATION_REVERTED"; reason: string } }
+  | { status: 409; body: { code: "TX_REVERTED"; hash: Hex } }
   | { status: 502; body: { code: "RPC_ERROR" } }
+  | { status: 503; body: { code: "MISCONFIGURED" } }
   | { status: 504; body: { code: "RECEIPT_TIMEOUT"; hash: Hex } };
 
 function invalidRequest(): RelayResponse {
@@ -109,6 +123,10 @@ function invalidSignature(): RelayResponse {
 
 function rpcError(): RelayResponse {
   return { status: 502, body: { code: "RPC_ERROR" } };
+}
+
+function misconfigured(): RelayResponse {
+  return { status: 503, body: { code: "MISCONFIGURED" } };
 }
 
 // ---------------------------------------------------------------------------
@@ -254,19 +272,24 @@ function buildContractCall(request: RelayRequest): ContractCall {
 }
 
 // ---------------------------------------------------------------------------
-// Paso 4 + 6: writeContract con reintento ante error de nonce (hasta 3 veces,
-// nonce "pending")
+// Paso 4 + 6: writeContract con reintento ante error de nonce (hasta 2 veces,
+// nonce "pending", con hasta 250ms de espera entre intentos)
 // ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function writeWithNonceRetry(
   deps: RelayDeps,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   request: any,
 ): Promise<Hex> {
-  const maxRetries = deps.maxNonceRetries ?? 3;
+  const maxRetries = deps.maxNonceRetries ?? 2;
   let lastError: unknown;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) await sleep(250); // <= 500ms entre reintentos (docs §6)
     try {
       const nonce = await deps.publicClient.getTransactionCount({
         address: deps.relayerAccount.address,
@@ -298,6 +321,12 @@ export async function handleRelay(body: unknown, deps: RelayDeps): Promise<Relay
   if (!parsed.success) return invalidRequest();
   const request = parsed.data;
 
+  // 1.5. la dirección del escrow debe ser realmente un contrato (memoizado
+  // por proceso) antes de mandar ninguna transacción — ver docs en
+  // contractGuard.ts.
+  const escrowIsContract = await isContractAddress(deps.publicClient, deps.escrowAddress);
+  if (!escrowIsContract) return misconfigured();
+
   // 2. verificar off-chain la firma EIP-712 contra el firmante esperado
   let signatureOk: boolean;
   try {
@@ -308,7 +337,13 @@ export async function handleRelay(body: unknown, deps: RelayDeps): Promise<Relay
   if (!signatureOk) return invalidSignature();
 
   // 3. simulateContract
-  const call = buildContractCall(request);
+  let call: ContractCall;
+  try {
+    call = buildContractCall(request);
+  } catch {
+    // p. ej. `parseSignature` sobre un permitSig malformado
+    return invalidSignature();
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let simulatedRequest: any;
   try {
@@ -344,6 +379,11 @@ export async function handleRelay(body: unknown, deps: RelayDeps): Promise<Relay
       hash,
       timeout: deps.receiptTimeoutMs ?? 20_000,
     });
+    if (receipt.status !== "success") {
+      // el simulateContract previo pasó, pero la tx minada revirtió igual
+      // (p. ej. cambio de estado entre la simulación y la inclusión en bloque)
+      return { status: 409, body: { code: "TX_REVERTED", hash } };
+    }
     return {
       status: 200,
       body: { hash, blockNumber: receipt.blockNumber.toString(), status: "success" },

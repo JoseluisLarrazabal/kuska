@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Account, Address, Hex, PublicClient, WalletClient } from "viem";
 import { mockUsdAbi } from "../src/lib/escrow/abi";
 import { findRevertedError } from "./viemErrors";
+import { isContractAddress } from "./contractGuard";
 
 const faucetRequestSchema = z.object({
   to: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "dirección inválida"),
@@ -21,7 +22,8 @@ export type FaucetResponse =
   | { status: 400; body: { code: "INVALID_REQUEST" } }
   | { status: 404; body: { code: "NOT_FOUND" } }
   | { status: 409; body: { code: "FAUCET_COOLDOWN"; availableAt: string } }
-  | { status: 502; body: { code: "RPC_ERROR" } };
+  | { status: 502; body: { code: "RPC_ERROR" } }
+  | { status: 503; body: { code: "MISCONFIGURED" } };
 
 /** `POST /api/faucet` (docs/escrow-interface.md §6). */
 export async function handleFaucet(body: unknown, deps: FaucetDeps): Promise<FaucetResponse> {
@@ -34,6 +36,14 @@ export async function handleFaucet(body: unknown, deps: FaucetDeps): Promise<Fau
     return { status: 400, body: { code: "INVALID_REQUEST" } };
   }
   const to = parsed.data.to as Address;
+
+  // la dirección del token debe ser realmente un contrato (memoizado por
+  // proceso) antes de mandar ninguna transacción — ver contractGuard.ts. El
+  // relayer ya mandó una tx de faucet a una dirección sin contrato en testnet.
+  const tokenIsContract = await isContractAddress(deps.publicClient, deps.tokenAddress);
+  if (!tokenIsContract) {
+    return { status: 503, body: { code: "MISCONFIGURED" } };
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let simulatedRequest: any;

@@ -147,11 +147,12 @@ event DisputeResolved(bytes32 indexed orderRef, bool toSeller);
 
 **Pipeline obligatorio:**
 1. validar el esquema;
+1.5. verificar (memoizado por proceso) que la dirección del escrow tenga bytecode desplegado — si no, `503 MISCONFIGURED` sin mandar ninguna tx;
 2. verificar off-chain la firma EIP-712 contra el firmante esperado. Para claim, cancel, release y dispute se lee `getDeal` y se usa `deal.seller` o `deal.buyer`;
 3. `simulateContract`;
 4. `writeContract`;
-5. `waitForTransactionReceipt` (timeout 20 s);
-6. ante un error de nonce, reintentar hasta 3 veces con el nonce `pending`.
+5. `waitForTransactionReceipt` (timeout 20 s); si el receipt no viene con `status: "success"`, `409 TX_REVERTED` con el hash;
+6. ante un error de nonce (incluye "nonce too low" y "replacement underpriced"), reintentar hasta 2 veces con el nonce `pending` (hasta ~250ms de espera entre intentos).
 
 **Respuestas:**
 
@@ -159,15 +160,18 @@ event DisputeResolved(bytes32 indexed orderRef, bool toSeller);
 |---|---|
 | `200` | `{ hash, blockNumber, status: "success" }` |
 | `400` | `{ code: "INVALID_REQUEST" \| "INVALID_SIGNATURE" }` |
-| `409` | `{ code: "SIMULATION_REVERTED", reason }` (`reason` = nombre del custom error) |
+| `409` | `{ code: "SIMULATION_REVERTED", reason }` (`reason` = nombre del custom error) o `{ code: "TX_REVERTED", hash }` |
 | `502` | `{ code: "RPC_ERROR" }` |
+| `503` | `{ code: "MISCONFIGURED" }` (la dirección del escrow/token configurada no tiene bytecode) |
 | `504` | `{ code: "RECEIPT_TIMEOUT", hash }` |
 
 ### `POST /api/faucet`
-- Body `{ to }`: llama `MockUSD.faucet(to)` (simular primero).
+- Body `{ to }`: llama `MockUSD.faucet(to)` (simular primero). Antes de simular, verifica
+  (memoizado por proceso) que la dirección del token tenga bytecode desplegado.
 - Respuestas:
   - `200 { hash }`;
   - `409 { code: "FAUCET_COOLDOWN", availableAt }`;
+  - `503 { code: "MISCONFIGURED" }` (la dirección del token no tiene bytecode);
   - en mainnet → `404`.
 
 ### `GET /api/health`

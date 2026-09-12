@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeErrorResult, parseAbi, ContractFunctionRevertedError, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { handleRelay, type RelayDeps } from "../server/relay";
+import { handleRelay, relayRequestSchema, type RelayDeps } from "../server/relay";
 import { kuskaEscrowAbi } from "../src/lib/escrow/abi";
+import { resetContractGuardCache } from "../server/contractGuard";
 
 const ESCROW_ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const CHAIN_ID = 133;
@@ -32,6 +33,8 @@ function createDeps(overrides: Partial<RelayDeps> = {}) {
     simulateContract: vi.fn().mockResolvedValue({ request: { fake: "request" } }),
     getTransactionCount: vi.fn().mockResolvedValue(1),
     waitForTransactionReceipt: vi.fn().mockResolvedValue({ blockNumber: 42n, status: "success" }),
+    // bytecode no vacío por defecto: el escrow "es un contrato" (fix MISCONFIGURED)
+    getCode: vi.fn().mockResolvedValue("0x1234"),
   };
   const walletClient = {
     writeContract: vi.fn().mockResolvedValue("0xhash000000000000000000000000000000000000000000000000000000000001"),
@@ -67,6 +70,13 @@ const depositParams = {
 };
 
 describe("handleRelay", () => {
+  // el guard de "¿es un contrato?" cachea por dirección en memoria de
+  // proceso; resetear entre tests para que cada uno controle su propio mock
+  // de `getCode` sin filtrarse al resto.
+  beforeEach(() => {
+    resetContractGuardCache();
+  });
+
   it("400 INVALID_REQUEST cuando el body no cumple el schema", async () => {
     const { deps, walletClient } = createDeps();
     const result = await handleRelay({ action: "deposit", params: {} }, deps);
@@ -176,5 +186,140 @@ describe("handleRelay", () => {
 
     expect(publicClient.verifyTypedData).not.toHaveBeenCalled();
     expect(result.status).toBe(200);
+  });
+
+  // -- fix TX_REVERTED --------------------------------------------------
+
+  it("409 TX_REVERTED con el hash cuando el receipt indica que la tx revirtió", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.waitForTransactionReceipt.mockResolvedValue({
+      blockNumber: 42n,
+      status: "reverted",
+    });
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result).toEqual({
+      status: 409,
+      body: { code: "TX_REVERTED", hash: expect.stringMatching(/^0x/) },
+    });
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(1);
+  });
+
+  // -- fix parseSignature fuera de try/catch -----------------------------
+
+  it("400 INVALID_SIGNATURE cuando permitSig no se puede parsear (v/yParity inválido), sin llamar simulateContract", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    // 65 bytes con forma correcta, pero el último byte (v/yParity) no es
+    // 0x00/0x01/0x1b/0x1c: `parseSignature` tira "Invalid yParityOrV value".
+    const badPermitSig = ("0x" + "22".repeat(64) + "ff") as Hex;
+
+    const result = await handleRelay(
+      { action: "deposit", params: { ...depositParams, permitSig: badPermitSig } },
+      deps,
+    );
+
+    expect(result).toEqual({ status: 400, body: { code: "INVALID_SIGNATURE" } });
+    expect(publicClient.simulateContract).not.toHaveBeenCalled();
+    expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
+  // -- fix reintento de nonce ampliado ------------------------------------
+
+  it("reintenta ante 'replacement transaction underpriced' y responde 200", async () => {
+    const { deps, walletClient, publicClient } = createDeps();
+    walletClient.writeContract
+      .mockRejectedValueOnce(new Error("replacement transaction underpriced"))
+      .mockResolvedValueOnce(
+        "0xhash000000000000000000000000000000000000000000000000000000000004",
+      );
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result.status).toBe(200);
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(2);
+    expect(publicClient.getTransactionCount).toHaveBeenCalledTimes(2);
+  });
+
+  it("502 RPC_ERROR tras agotar los reintentos de nonce (tope maxNonceRetries)", async () => {
+    const { deps, walletClient } = createDeps({ maxNonceRetries: 2 });
+    walletClient.writeContract.mockRejectedValue(new Error("nonce too low"));
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(2);
+  });
+
+  // -- fix getCode -> 503 MISCONFIGURED -----------------------------------
+
+  it("503 MISCONFIGURED cuando el escrow no tiene bytecode, sin llamar verifyTypedData/simulateContract/writeContract", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    publicClient.getCode.mockResolvedValue("0x");
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result).toEqual({ status: 503, body: { code: "MISCONFIGURED" } });
+    expect(publicClient.verifyTypedData).not.toHaveBeenCalled();
+    expect(publicClient.simulateContract).not.toHaveBeenCalled();
+    expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("cachea el resultado de getCode en memoria: solo golpea el RPC una vez por dirección", async () => {
+    const { deps, publicClient } = createDeps();
+
+    await handleRelay({ action: "refundExpired", params: { orderRef: ORDER_REF } }, deps);
+    await handleRelay({ action: "refundExpired", params: { orderRef: ORDER_REF } }, deps);
+
+    expect(publicClient.getCode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("relayRequestSchema — validación de firmas (fix ERC-1271)", () => {
+  const baseCancelParams = { orderRef: ORDER_REF, sigDeadline: "1893456000" };
+
+  it("acepta una firma de longitud par arbitraria (ERC-1271, smart account) en sellerSig", () => {
+    const erc1271Sig = "0x" + "ab".repeat(96); // 96 bytes / 192 hex, par
+    const result = relayRequestSchema.safeParse({
+      action: "cancel",
+      params: { ...baseCancelParams, sellerSig: erc1271Sig },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rechaza una firma de longitud hex impar (129 hex — bug histórico)", () => {
+    const oddLengthSig = "0x" + "ab".repeat(64) + "a"; // 129 hex, impar
+    const result = relayRequestSchema.safeParse({
+      action: "cancel",
+      params: { ...baseCancelParams, sellerSig: oddLengthSig },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rechaza una firma demasiado corta (<64 hex)", () => {
+    const tooShortSig = "0x" + "ab".repeat(16); // 32 hex
+    const result = relayRequestSchema.safeParse({
+      action: "cancel",
+      params: { ...baseCancelParams, sellerSig: tooShortSig },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rechaza una firma demasiado larga (>8192 hex)", () => {
+    const tooLongSig = "0x" + "ab".repeat(4097); // 8194 hex
+    const result = relayRequestSchema.safeParse({
+      action: "cancel",
+      params: { ...baseCancelParams, sellerSig: tooLongSig },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("permitSig sigue exigiendo exactamente 65 bytes (130 hex), incluso con la firma flexible ya aplicada a las demás", () => {
+    const shortPermit = "0x" + "22".repeat(64); // 64 bytes: ya no alcanza para permitSig
+    const result = relayRequestSchema.safeParse({
+      action: "deposit",
+      params: { ...depositParams, permitSig: shortPermit },
+    });
+    expect(result.success).toBe(false);
   });
 });
