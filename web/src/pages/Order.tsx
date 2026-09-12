@@ -95,7 +95,15 @@ export default function Order() {
         </div>
       ) : null}
 
-      {isError ? (
+      {/*
+        Con react-query v5, `isError` también queda en `true` cuando un
+        refetch de fondo falla (este hook pollea cada 4s con `retry: 2`, ver
+        `useDeal.ts`) mientras ya había un `deal` cargado. Mostrar el banner
+        de error completo en ese caso es engañoso: la tarjeta del pedido de
+        abajo sigue mostrando el último estado válido al mismo tiempo. Solo se
+        bloquea con el error grande cuando no hay ningún dato todavía.
+      */}
+      {isError && !deal ? (
         <Banner kind="error" title="No se pudo leer el pedido" className="mt-6">
           <p>No pudimos hablar con la red ahora mismo.</p>
           <button type="button" onClick={() => refetch()} className="tap-target mt-2 font-medium underline">
@@ -106,6 +114,11 @@ export default function Order() {
 
       {deal ? (
         <>
+          {isError ? (
+            <Banner kind="warning" title="No pudimos actualizar el pedido" className="mt-6">
+              Mostrando el último estado conocido. Puede haber cambiado desde entonces.
+            </Banner>
+          ) : null}
           <div className="mt-6 flex items-center justify-between rounded-card bg-blanco p-4">
             <StatusChip state={deal.state} />
             <AmountMono amount={deal.amount} size="md" />

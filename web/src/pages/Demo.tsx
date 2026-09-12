@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { formatEther, type Address } from "viem";
+import { formatEther, type Address, type Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
 import { Button } from "../lib/ui/components/Button";
 import { Banner } from "../lib/ui/components/Banner";
@@ -10,20 +10,21 @@ import { AmountMono } from "../lib/ui/components/AmountMono";
 import { DropletIcon } from "../lib/ui/components/Icon";
 import {
   getAccount,
-  getBackupAccount,
+  getKeyHistory,
   getOrCreateAccount,
   importAccount,
   previewAccountFromKey,
-  restoreBackupAccount,
+  restorePreviousAccount,
 } from "../lib/burner";
 import { getDeploymentConfig } from "../config/deployment";
 import { getPublicClient } from "../lib/ui/viemClient";
 import { kuskaEscrowAbi } from "../lib/escrow/abi";
 import { getTokenBalance } from "../lib/ui/token";
-import { getHealth, postFaucet } from "../lib/ui/relayer";
+import { getHealth, postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { createOrder } from "../lib/ui/depositFlow";
 import { listTrackedOrders, trackOrder, type TrackedOrder } from "../lib/ui/orderRegistry";
 import { formatUnixTime } from "../lib/ui/format";
+import { txExplorerUrl } from "../lib/ui/explorer";
 
 /** Saldo mínimo de HSK para pagar gas (docs/escrow-interface.md §6). */
 const LOW_BALANCE_WEI = 20_000_000_000_000_000n; // 0.02 HSK
@@ -87,6 +88,13 @@ export default function Demo() {
   const [demoOrders, setDemoOrders] = useState<TrackedOrder[]>(() =>
     listTrackedOrders().filter((o) => o.role === "demo"),
   );
+  // Referencia de un deal de demo cuya falla pudo haber mandado (o dejado
+  // pendiente de confirmar) la transacción igual (`relayErrorMaybeSentTx`) —
+  // mismo problema que `Buy.tsx` ya arregla, replicado acá: sin esto, un
+  // timeout/`TX_REVERTED` armando un deal de demo perdía el `orderRef` para
+  // siempre y un reintento fondeaba un segundo pedido encima de fondos que
+  // podían haber quedado en custodia sin que nadie los viera.
+  const [ambiguousDemoOrder, setAmbiguousDemoOrder] = useState<{ ref: Hex; hash?: string } | null>(null);
   const [importKeyInput, setImportKeyInput] = useState("");
   const [importStatus, setImportStatus] = useState<"idle" | "done" | "error">("idle");
   const [importMessage, setImportMessage] = useState<string | null>(null);
@@ -110,11 +118,12 @@ export default function Demo() {
   const localAccount = getAccount();
   const deviceIsDemoSeller =
     !!localAccount && localAccount.address.toLowerCase() === demoSeller.toLowerCase();
-  const backupAccount = getBackupAccount();
+  const previousAddresses = getKeyHistory();
   // ¿Este dispositivo ya tiene estado como comprador (pedidos armados, o
   // saldo de mUSD) que se quedaría sin firmante si se reemplaza la llave
   // local ahora? Los deals de "demo" también usan la cuenta local como
-  // comprador (`armDemoDeal`), así que cuentan igual que los de "buyer".
+  // comprador (`armDemoDeal`), así que cuentan igual que los de "buyer" — y
+  // eso incluye el pedido de `ambiguousDemoOrder` una vez trackeado más abajo.
   const hasTrackedBuyerOrders = listTrackedOrders().some((o) => o.role === "buyer" || o.role === "demo");
   const localMusd = localAccount
     ? data?.roles.find((r) => r.address.toLowerCase() === localAccount.address.toLowerCase())?.musd
@@ -148,6 +157,7 @@ export default function Demo() {
     if (creating !== null || deviceIsDemoSeller) return;
     setCreating(kind);
     setCreateError(null);
+    setAmbiguousDemoOrder(null);
     try {
       const buyer = getOrCreateAccount();
       const { orderRef, outcome } = await createOrder({
@@ -158,6 +168,16 @@ export default function Demo() {
       });
       if (!outcome.ok) {
         setCreateError(outcome.error.message);
+        // Misma clasificación que `Buy.tsx`: la falla puede haber llegado
+        // DESPUÉS de mandar la tx (p. ej. un 504 RECEIPT_TIMEOUT). Sin
+        // trackear el pedido acá, el `orderRef` se perdía para siempre y un
+        // reintento fondeaba un segundo pedido encima de fondos que podían
+        // haber quedado en custodia.
+        if (relayErrorMaybeSentTx(outcome.error)) {
+          trackOrder(orderRef, { role: "demo", item: kind === "refund" ? "Deal de reembolso (demo)" : "Deal normal (demo)" });
+          setAmbiguousDemoOrder({ ref: orderRef, hash: outcome.error.hash });
+          setDemoOrders(listTrackedOrders().filter((o) => o.role === "demo"));
+        }
       } else {
         trackOrder(orderRef, { role: "demo", item: kind === "refund" ? "Deal de reembolso (demo)" : "Deal normal (demo)" });
         setDemoOrders(listTrackedOrders().filter((o) => o.role === "demo"));
@@ -194,7 +214,7 @@ export default function Demo() {
       setImportStatus("done");
       setImportMessage(
         `Identidad importada: este dispositivo ahora firma como ${account.address}. ` +
-          "Si había una llave anterior, quedó guardada — podés restaurarla más abajo.",
+          "Si había una llave anterior, quedó guardada en el historial — podés restaurarla más abajo.",
       );
       setImportKeyInput("");
     } catch (err) {
@@ -205,8 +225,8 @@ export default function Demo() {
     }
   }
 
-  function handleRestoreBackup() {
-    const restored = restoreBackupAccount();
+  function handleRestorePrevious(address: Address) {
+    const restored = restorePreviousAccount(address);
     if (restored) {
       setImportStatus("done");
       setImportMessage(`Restaurada la identidad anterior de este dispositivo: ${restored.address}.`);
@@ -331,8 +351,9 @@ export default function Demo() {
             <p>
               Este dispositivo ya tiene pedidos armados como comprador y/o saldo de mUSD
               con la cuenta actual. Importar la nueva llave la reemplaza: la cuenta actual
-              queda guardada como backup (podés restaurarla después), pero mientras tanto
-              este dispositivo deja de poder firmar como comprador para esos pedidos.
+              queda guardada en el historial de este dispositivo (podés restaurarla después,
+              junto con otras llaves anteriores), pero mientras tanto este dispositivo deja
+              de poder firmar como comprador para esos pedidos.
             </p>
             <div className="mt-2 flex gap-2">
               <Button variant="danger" onClick={() => doImportKey(pendingImportKey)}>
@@ -345,14 +366,22 @@ export default function Demo() {
           </Banner>
         ) : null}
 
-        {backupAccount ? (
-          <div className="mt-3 flex flex-col items-start gap-2 rounded-card bg-verde/5 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-            <span className="text-verde-mut">
-              Llave anterior de este dispositivo guardada: <AddressMono address={backupAccount.address} />
+        {previousAddresses.length > 0 ? (
+          <div className="mt-3 flex flex-col gap-2">
+            <span className="text-sm text-verde-mut">
+              Llaves anteriores de este dispositivo (más reciente primero):
             </span>
-            <Button variant="secondary" onClick={handleRestoreBackup}>
-              Restaurar la llave anterior
-            </Button>
+            {previousAddresses.map((address) => (
+              <div
+                key={address}
+                className="flex flex-col items-start gap-2 rounded-card bg-verde/5 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+              >
+                <AddressMono address={address} />
+                <Button variant="secondary" onClick={() => handleRestorePrevious(address)}>
+                  Restaurar esta identidad
+                </Button>
+              </div>
+            ))}
           </div>
         ) : null}
       </section>
@@ -423,7 +452,30 @@ export default function Demo() {
         </div>
         {createError ? (
           <Banner kind="error" className="mt-3">
-            {createError}
+            <p>{createError}</p>
+            {ambiguousDemoOrder ? (
+              <div className="mt-2 flex flex-col items-start gap-1">
+                <p>
+                  No podemos confirmar si la transacción llegó a la cadena. Guardamos esta
+                  referencia — revisá el estado del pedido antes de reintentar, un reintento
+                  puede fondear un segundo pedido si el primero sí se confirmó.
+                </p>
+                <p className="font-mono text-xs">{ambiguousDemoOrder.ref}</p>
+                {ambiguousDemoOrder.hash && txExplorerUrl(ambiguousDemoOrder.hash) ? (
+                  <a
+                    href={txExplorerUrl(ambiguousDemoOrder.hash)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    Ver la transacción en el explorer
+                  </a>
+                ) : null}
+                <Link to={`/pedido/${ambiguousDemoOrder.ref}`} className="font-medium underline">
+                  Ver estado del pedido
+                </Link>
+              </div>
+            ) : null}
           </Banner>
         ) : null}
         {demoOrders.length > 0 ? (

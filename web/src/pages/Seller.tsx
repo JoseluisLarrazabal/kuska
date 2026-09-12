@@ -113,7 +113,14 @@ function SellerOrderCard({
     }
   }
 
-  if (isError) {
+  // Con react-query v5, `isError` también queda en `true` cuando un refetch
+  // de fondo (este hook pollea cada 4s con `retry: 2`, ver `useDeal.ts`) falla
+  // mientras ya había un `deal` cargado de una vuelta anterior. Reemplazar la
+  // tarjeta entera por un error acá — incluyendo el QR que el comprador puede
+  // estar escaneando en ese momento — por un blip de RPC de 4 segundos es
+  // peor que mostrar el último estado conocido con un aviso chico. Solo se
+  // trata como error bloqueante cuando NO hay ningún dato todavía.
+  if (isError && !deal) {
     return (
       <div className="rounded-card bg-blanco p-4">
         <div className="flex items-center justify-between">
@@ -157,6 +164,12 @@ function SellerOrderCard({
 
       {order.item ? <p className="mt-2 text-sm text-verde">{order.item}</p> : null}
       <p className="mt-1 font-mono text-xs text-verde-mut">{order.ref}</p>
+      {isError ? (
+        <p className="mt-1 text-xs text-terracota">
+          No pudimos actualizar este pedido en el último intento — mostrando el último estado
+          conocido.
+        </p>
+      ) : null}
 
       <div className="mt-2 flex items-center justify-between text-sm">
         <span className="text-verde-mut">Comprador</span>

@@ -42,15 +42,20 @@ export default function Buy() {
   const [faucetStatus, setFaucetStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
 
-  const persistent = useMemo(() => isBurnerPersistent(), []);
   // "Comprar" es un flujo donde crear la cuenta burner es esperado y explícito
-  // (ver el docstring de `getOrCreateAccount` en lib/burner.ts).
+  // (ver el docstring de `getOrCreateAccount` en lib/burner.ts). Esto tiene
+  // que ejecutarse ANTES de `isBurnerPersistent()`: en la primera visita
+  // (localStorage funcionando, sin llave todavía) `isPersistent()` mira si
+  // YA hay algo guardado, así que llamarla antes de crear la cuenta siempre
+  // daba `false` — un aviso de "esta cuenta no se va a guardar" falso hasta
+  // recargar, aunque el guardado hubiera funcionado perfectamente.
   const buyerPreview = useMemo(() => getOrCreateAccount().address, []);
+  const persistent = useMemo(() => isBurnerPersistent(), [buyerPreview]);
   const sellerIsLocalAccount = isAddress(seller) && seller.toLowerCase() === buyerPreview.toLowerCase();
   const sellerError = seller.length > 0 && !isAddress(seller)
     ? "Dirección inválida (0x + 40 hex)."
     : sellerIsLocalAccount
-      ? "El vendedor no puede ser esta misma cuenta: el contrato no permite comprador == vendedor. Armá el pedido desde el dispositivo del vendedor."
+      ? "El vendedor no puede ser esta misma cuenta: el contrato no permite comprador == vendedor. Este mismo dispositivo es el vendedor — el pedido tiene que armarse desde el dispositivo del comprador."
       : undefined;
   const parsedAmount = parseAmountInput(amountInput);
   const amountError =
