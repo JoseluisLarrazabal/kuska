@@ -1,0 +1,157 @@
+import { describe, expect, it } from "vitest";
+import { createPublicClient, http } from "viem";
+import { verifyTypedData } from "viem/actions";
+import { hashkeyTestnet } from "viem/chains";
+import { privateKeyToAccount } from "viem/accounts";
+import {
+  buildCancel,
+  buildDeliveryClaim,
+  buildDeliveryConfirmation,
+  buildDepositAuthorization,
+  buildDispute,
+  buildPermit,
+} from "../src/lib/escrow/typedData";
+
+// Cuenta de prueba pública y sin fondos (Hardhat account #0) — nunca usar en
+// un entorno real.
+const TEST_PRIVATE_KEY =
+  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
+
+const ESCROW_ADDRESS = "0x1111111111111111111111111111111111111111" as const;
+const TOKEN_ADDRESS = "0x2222222222222222222222222222222222222222" as const;
+const ORDER_REF = ("0x" + "aa".repeat(32)) as `0x${string}`;
+const CHAIN_ID = 133;
+
+// Cliente de solo lectura: `verifyTypedData` primero intenta recuperar la
+// dirección localmente (sin red); solo golpearía el RPC en un fallback
+// ERC-1271, que estas firmas EOA nunca disparan.
+const client = createPublicClient({ chain: hashkeyTestnet, transport: http() });
+
+describe("typedData builders", () => {
+  const account = privateKeyToAccount(TEST_PRIVATE_KEY);
+
+  it("DepositAuthorization: la firma del buyer es válida contra el dominio del escrow", async () => {
+    const typedData = buildDepositAuthorization({
+      chainId: CHAIN_ID,
+      verifyingContract: ESCROW_ADDRESS,
+      orderRef: ORDER_REF,
+      seller: "0x3333333333333333333333333333333333333333",
+      amount: 1_000_000n,
+      deliveryDeadline: 1_893_456_000n,
+      authDeadline: 1_893_456_000n,
+    });
+    const signature = await account.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(true);
+  });
+
+  it("DeliveryClaim: la firma del seller es válida", async () => {
+    const typedData = buildDeliveryClaim({
+      chainId: CHAIN_ID,
+      verifyingContract: ESCROW_ADDRESS,
+      orderRef: ORDER_REF,
+      sigDeadline: 1_893_456_000n,
+    });
+    const signature = await account.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(true);
+  });
+
+  it("Cancel: la firma del seller es válida", async () => {
+    const typedData = buildCancel({
+      chainId: CHAIN_ID,
+      verifyingContract: ESCROW_ADDRESS,
+      orderRef: ORDER_REF,
+      sigDeadline: 1_893_456_000n,
+    });
+    const signature = await account.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(true);
+  });
+
+  it("DeliveryConfirmation: la firma del buyer es válida", async () => {
+    const typedData = buildDeliveryConfirmation({
+      chainId: CHAIN_ID,
+      verifyingContract: ESCROW_ADDRESS,
+      orderRef: ORDER_REF,
+      sigDeadline: 1_893_456_000n,
+    });
+    const signature = await account.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(true);
+  });
+
+  it("Dispute: la firma del buyer es válida", async () => {
+    const typedData = buildDispute({
+      chainId: CHAIN_ID,
+      verifyingContract: ESCROW_ADDRESS,
+      orderRef: ORDER_REF,
+      sigDeadline: 1_893_456_000n,
+    });
+    const signature = await account.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(true);
+  });
+
+  it("Permit (EIP-2612): la firma del owner es válida contra el dominio del token", async () => {
+    const typedData = buildPermit({
+      domain: {
+        name: "Kuska Demo USD",
+        version: "1",
+        chainId: CHAIN_ID,
+        verifyingContract: TOKEN_ADDRESS,
+      },
+      owner: account.address,
+      spender: ESCROW_ADDRESS,
+      value: 1_000_000n,
+      nonce: 0n,
+      deadline: 1_893_456_000n,
+    });
+    const signature = await account.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(true);
+  });
+
+  it("una firma de otra cuenta no es aceptada", async () => {
+    const other = privateKeyToAccount(
+      "0x738b04271ddddd3492da4b94e5ab6b4531c6bb981841e79555f8d9f287eea09f",
+    );
+    const typedData = buildCancel({
+      chainId: CHAIN_ID,
+      verifyingContract: ESCROW_ADDRESS,
+      orderRef: ORDER_REF,
+      sigDeadline: 1_893_456_000n,
+    });
+    const signature = await other.signTypedData(typedData);
+    const valid = await verifyTypedData(client, {
+      address: account.address,
+      ...typedData,
+      signature,
+    });
+    expect(valid).toBe(false);
+  });
+});

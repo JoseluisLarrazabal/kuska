@@ -1,0 +1,354 @@
+import { z } from "zod";
+import {
+  parseSignature,
+  type Account,
+  type Address,
+  type Hex,
+  type PublicClient,
+  type WalletClient,
+} from "viem";
+import { kuskaEscrowAbi } from "../src/lib/escrow/abi";
+import { getDeal } from "../src/lib/escrow/read";
+import {
+  buildCancel,
+  buildDeliveryClaim,
+  buildDeliveryConfirmation,
+  buildDepositAuthorization,
+  buildDispute,
+} from "../src/lib/escrow/typedData";
+import { findRevertedError, isNonceError } from "./viemErrors";
+
+// ---------------------------------------------------------------------------
+// Esquemas por acción (docs/escrow-interface.md §6). uint256/uint64 viajan
+// como string decimal (§4); direcciones, bytes32 y firmas como hex 0x….
+// ---------------------------------------------------------------------------
+
+const hexBytes32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/, "bytes32 inválido");
+const hexAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "dirección inválida");
+// firma ECDSA estándar (65 bytes / 130 hex) o compacta EIP-2098 (64 bytes / 128 hex)
+const hexSignature = z.string().regex(/^0x[0-9a-fA-F]{128,130}$/, "firma inválida");
+const decimalString = z
+  .string()
+  .regex(/^\d+$/, "debe ser un entero decimal en formato string")
+  .transform((v) => BigInt(v));
+
+const depositParamsSchema = z.object({
+  orderRef: hexBytes32,
+  buyer: hexAddress,
+  seller: hexAddress,
+  amount: decimalString,
+  deliveryDeadline: decimalString,
+  authDeadline: decimalString,
+  authSig: hexSignature,
+  permitDeadline: decimalString,
+  permitSig: hexSignature,
+});
+
+const sellerActionParamsSchema = z.object({
+  orderRef: hexBytes32,
+  sigDeadline: decimalString,
+  sellerSig: hexSignature,
+});
+
+const buyerActionParamsSchema = z.object({
+  orderRef: hexBytes32,
+  sigDeadline: decimalString,
+  buyerSig: hexSignature,
+});
+
+const orderRefOnlyParamsSchema = z.object({
+  orderRef: hexBytes32,
+});
+
+export const relayRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("deposit"), params: depositParamsSchema }),
+  z.object({ action: z.literal("claim"), params: sellerActionParamsSchema }),
+  z.object({ action: z.literal("cancel"), params: sellerActionParamsSchema }),
+  z.object({ action: z.literal("release"), params: buyerActionParamsSchema }),
+  z.object({ action: z.literal("dispute"), params: buyerActionParamsSchema }),
+  z.object({ action: z.literal("refundExpired"), params: orderRefOnlyParamsSchema }),
+  z.object({ action: z.literal("releaseAfterWindow"), params: orderRefOnlyParamsSchema }),
+]);
+
+export type RelayRequest = z.infer<typeof relayRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Dependencias inyectables (para poder mockear en tests)
+// ---------------------------------------------------------------------------
+
+export interface RelayDeps {
+  publicClient: PublicClient;
+  walletClient: WalletClient;
+  relayerAccount: Account;
+  escrowAddress: Address;
+  chainId: number;
+  /** default 20_000 ms (docs §6) */
+  receiptTimeoutMs?: number;
+  /** default 3 (docs §6) */
+  maxNonceRetries?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Respuestas EXACTAS de la interfaz (§6)
+// ---------------------------------------------------------------------------
+
+export type RelayResponse =
+  | { status: 200; body: { hash: Hex; blockNumber: string; status: "success" } }
+  | { status: 400; body: { code: "INVALID_REQUEST" | "INVALID_SIGNATURE" } }
+  | { status: 409; body: { code: "SIMULATION_REVERTED"; reason: string } }
+  | { status: 502; body: { code: "RPC_ERROR" } }
+  | { status: 504; body: { code: "RECEIPT_TIMEOUT"; hash: Hex } };
+
+function invalidRequest(): RelayResponse {
+  return { status: 400, body: { code: "INVALID_REQUEST" } };
+}
+
+function invalidSignature(): RelayResponse {
+  return { status: 400, body: { code: "INVALID_SIGNATURE" } };
+}
+
+function rpcError(): RelayResponse {
+  return { status: 502, body: { code: "RPC_ERROR" } };
+}
+
+// ---------------------------------------------------------------------------
+// Paso 2: verificación EIP-712 off-chain contra el firmante esperado
+// ---------------------------------------------------------------------------
+
+async function verifySignature(request: RelayRequest, deps: RelayDeps): Promise<boolean> {
+  const { action, params } = request;
+  const base = { chainId: deps.chainId, verifyingContract: deps.escrowAddress };
+
+  switch (action) {
+    case "deposit": {
+      const typedData = buildDepositAuthorization({
+        ...base,
+        orderRef: params.orderRef as Hex,
+        seller: params.seller as Address,
+        amount: params.amount,
+        deliveryDeadline: params.deliveryDeadline,
+        authDeadline: params.authDeadline,
+      });
+      return deps.publicClient.verifyTypedData({
+        address: params.buyer as Address,
+        ...typedData,
+        signature: params.authSig as Hex,
+      });
+    }
+    case "claim": {
+      const deal = await getDeal(deps.publicClient, deps.escrowAddress, params.orderRef as Hex);
+      const typedData = buildDeliveryClaim({
+        ...base,
+        orderRef: params.orderRef as Hex,
+        sigDeadline: params.sigDeadline,
+      });
+      return deps.publicClient.verifyTypedData({
+        address: deal.seller,
+        ...typedData,
+        signature: params.sellerSig as Hex,
+      });
+    }
+    case "cancel": {
+      const deal = await getDeal(deps.publicClient, deps.escrowAddress, params.orderRef as Hex);
+      const typedData = buildCancel({
+        ...base,
+        orderRef: params.orderRef as Hex,
+        sigDeadline: params.sigDeadline,
+      });
+      return deps.publicClient.verifyTypedData({
+        address: deal.seller,
+        ...typedData,
+        signature: params.sellerSig as Hex,
+      });
+    }
+    case "release": {
+      const deal = await getDeal(deps.publicClient, deps.escrowAddress, params.orderRef as Hex);
+      const typedData = buildDeliveryConfirmation({
+        ...base,
+        orderRef: params.orderRef as Hex,
+        sigDeadline: params.sigDeadline,
+      });
+      return deps.publicClient.verifyTypedData({
+        address: deal.buyer,
+        ...typedData,
+        signature: params.buyerSig as Hex,
+      });
+    }
+    case "dispute": {
+      const deal = await getDeal(deps.publicClient, deps.escrowAddress, params.orderRef as Hex);
+      const typedData = buildDispute({
+        ...base,
+        orderRef: params.orderRef as Hex,
+        sigDeadline: params.sigDeadline,
+      });
+      return deps.publicClient.verifyTypedData({
+        address: deal.buyer,
+        ...typedData,
+        signature: params.buyerSig as Hex,
+      });
+    }
+    case "refundExpired":
+    case "releaseAfterWindow":
+      // no requieren firma (docs §3 tabla de funciones)
+      return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paso 3-4: simulateContract + writeContract, dispatch dinámico por acción
+// ---------------------------------------------------------------------------
+
+interface ContractCall {
+  functionName: string;
+  args: readonly unknown[];
+}
+
+function buildContractCall(request: RelayRequest): ContractCall {
+  const { action, params } = request;
+  switch (action) {
+    case "deposit": {
+      const { r, s, v, yParity } = parseSignature(params.permitSig as Hex);
+      const vValue = v ?? BigInt(yParity + 27);
+      return {
+        functionName: "depositWithPermit",
+        args: [
+          params.orderRef,
+          params.buyer,
+          params.seller,
+          params.amount,
+          params.deliveryDeadline,
+          params.authDeadline,
+          params.authSig,
+          params.permitDeadline,
+          vValue,
+          r,
+          s,
+        ],
+      };
+    }
+    case "claim":
+      return {
+        functionName: "claimDelivery",
+        args: [params.orderRef, params.sigDeadline, params.sellerSig],
+      };
+    case "cancel":
+      return {
+        functionName: "cancel",
+        args: [params.orderRef, params.sigDeadline, params.sellerSig],
+      };
+    case "release":
+      return {
+        functionName: "release",
+        args: [params.orderRef, params.sigDeadline, params.buyerSig],
+      };
+    case "dispute":
+      return {
+        functionName: "dispute",
+        args: [params.orderRef, params.sigDeadline, params.buyerSig],
+      };
+    case "refundExpired":
+      return { functionName: "refundExpired", args: [params.orderRef] };
+    case "releaseAfterWindow":
+      return { functionName: "releaseAfterWindow", args: [params.orderRef] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paso 4 + 6: writeContract con reintento ante error de nonce (hasta 3 veces,
+// nonce "pending")
+// ---------------------------------------------------------------------------
+
+async function writeWithNonceRetry(
+  deps: RelayDeps,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  request: any,
+): Promise<Hex> {
+  const maxRetries = deps.maxNonceRetries ?? 3;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const nonce = await deps.publicClient.getTransactionCount({
+        address: deps.relayerAccount.address,
+        blockTag: "pending",
+      });
+      return await deps.walletClient.writeContract({
+        ...request,
+        account: deps.relayerAccount,
+        chain: deps.walletClient.chain,
+        nonce,
+      });
+    } catch (err) {
+      lastError = err;
+      if (!isNonceError(err)) throw err;
+      // reintentar con un nonce "pending" fresco
+    }
+  }
+
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline completo (docs/escrow-interface.md §6)
+// ---------------------------------------------------------------------------
+
+export async function handleRelay(body: unknown, deps: RelayDeps): Promise<RelayResponse> {
+  // 1. validar el esquema
+  const parsed = relayRequestSchema.safeParse(body);
+  if (!parsed.success) return invalidRequest();
+  const request = parsed.data;
+
+  // 2. verificar off-chain la firma EIP-712 contra el firmante esperado
+  let signatureOk: boolean;
+  try {
+    signatureOk = await verifySignature(request, deps);
+  } catch {
+    return rpcError();
+  }
+  if (!signatureOk) return invalidSignature();
+
+  // 3. simulateContract
+  const call = buildContractCall(request);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let simulatedRequest: any;
+  try {
+    const simulated = await deps.publicClient.simulateContract({
+      address: deps.escrowAddress,
+      abi: kuskaEscrowAbi,
+      account: deps.relayerAccount,
+      functionName: call.functionName,
+      args: call.args,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    simulatedRequest = simulated.request;
+  } catch (err) {
+    const reverted = findRevertedError(err);
+    if (reverted) {
+      const reason = reverted.data?.errorName ?? reverted.reason ?? "UNKNOWN";
+      return { status: 409, body: { code: "SIMULATION_REVERTED", reason } };
+    }
+    return rpcError();
+  }
+
+  // 4 + 6. writeContract (con reintento ante error de nonce)
+  let hash: Hex;
+  try {
+    hash = await writeWithNonceRetry(deps, simulatedRequest);
+  } catch {
+    return rpcError();
+  }
+
+  // 5. waitForTransactionReceipt (timeout 20s)
+  try {
+    const receipt = await deps.publicClient.waitForTransactionReceipt({
+      hash,
+      timeout: deps.receiptTimeoutMs ?? 20_000,
+    });
+    return {
+      status: 200,
+      body: { hash, blockNumber: receipt.blockNumber.toString(), status: "success" },
+    };
+  } catch {
+    return { status: 504, body: { code: "RECEIPT_TIMEOUT", hash } };
+  }
+}
