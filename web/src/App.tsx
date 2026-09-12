@@ -1,36 +1,35 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
-import Landing from "./pages/Landing";
-import Buy from "./pages/Buy";
-import Order from "./pages/Order";
-import Deliver from "./pages/Deliver";
-import Seller from "./pages/Seller";
-import Demo from "./pages/Demo";
+import { ErrorBoundary } from "./lib/ui/components/ErrorBoundary";
+import { RouteFallback } from "./lib/ui/components/RouteFallback";
 
-// Import perezoso: en build de producción (`import.meta.env.DEV` falso) el
-// bundle de `Preview.tsx` queda en su propio chunk y nunca se referencia
-// desde la ruta real, así que Vite lo separa del bundle principal.
+// Import perezoso de TODAS las páginas: cada una queda en su propio chunk y
+// solo se descarga cuando se visita esa ruta (bundle inicial más chico —
+// ver vite.config.ts para el split de vendors). `Landing` (`/`) también es
+// lazy, pero al no importar `getDeploymentConfig` sigue funcionando aunque
+// el env esté mal configurado.
+const Landing = lazy(() => import("./pages/Landing"));
+const Buy = lazy(() => import("./pages/Buy"));
+const Order = lazy(() => import("./pages/Order"));
+const Deliver = lazy(() => import("./pages/Deliver"));
+const Seller = lazy(() => import("./pages/Seller"));
+const Demo = lazy(() => import("./pages/Demo"));
 const Preview = lazy(() => import("./pages/Preview"));
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Landing />} />
-      <Route path="/comprar" element={<Buy />} />
-      <Route path="/pedido/:ref" element={<Order />} />
-      <Route path="/entregar" element={<Deliver />} />
-      <Route path="/vendedor" element={<Seller />} />
-      <Route path="/demo" element={<Demo />} />
-      {import.meta.env.DEV ? (
-        <Route
-          path="/_preview"
-          element={
-            <Suspense fallback={null}>
-              <Preview />
-            </Suspense>
-          }
-        />
-      ) : null}
-    </Routes>
+    <ErrorBoundary>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/comprar" element={<Buy />} />
+          <Route path="/pedido/:ref" element={<Order />} />
+          <Route path="/entregar" element={<Deliver />} />
+          <Route path="/vendedor" element={<Seller />} />
+          <Route path="/demo" element={<Demo />} />
+          {import.meta.env.DEV ? <Route path="/_preview" element={<Preview />} /> : null}
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   );
 }

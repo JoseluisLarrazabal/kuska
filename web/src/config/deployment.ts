@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { Chain } from "viem";
 import { hashkey, hashkeyTestnet } from "viem/chains";
+// Re-exportado desde un módulo sin dependencias — ver el comentario en
+// `deploymentConfigError.ts` sobre por qué no se define acá directamente.
+import { DeploymentConfigError } from "./deploymentConfigError";
+export { DeploymentConfigError } from "./deploymentConfigError";
 
 const addressSchema = z
   .string()
@@ -51,9 +55,7 @@ export function getDeploymentConfig(): DeploymentConfig {
     const issues = parsed.error.issues
       .map((i) => `${i.path.join(".")}: ${i.message}`)
       .join("; ");
-    throw new Error(
-      `Configuración de deployment inválida o incompleta (revisá web/.env.local contra .env.example): ${issues}`,
-    );
+    throw new DeploymentConfigError(issues);
   }
 
   const data = parsed.data;
