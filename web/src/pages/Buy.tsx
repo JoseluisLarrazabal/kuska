@@ -45,7 +45,14 @@ export default function Buy() {
   // (`relayErrorMaybeSentTx`): sin esto, un timeout/`TX_REVERTED` perdía el
   // `orderRef` para siempre y un reintento fondeaba un segundo pedido encima
   // de fondos que podían haber quedado en custodia sin que nadie los viera.
-  const [ambiguousOrder, setAmbiguousOrder] = useState<{ ref: Hex; hash?: string } | null>(null);
+  // `item` queda capturado acá con el valor REALMENTE enviado: el campo del
+  // formulario sigue editable después del submit, así que el link de
+  // recuperación no puede leer el `item` en vivo (si el usuario lo edita
+  // antes de reintentar, `Order.tsx` pisaría el label correcto del pedido A
+  // con el texto nuevo de B).
+  const [ambiguousOrder, setAmbiguousOrder] = useState<{ ref: Hex; hash?: string; item: string } | null>(
+    null,
+  );
 
   const [faucetStatus, setFaucetStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
@@ -119,7 +126,7 @@ export default function Buy() {
         // encima de fondos que podían haber quedado en custodia.
         if (relayErrorMaybeSentTx(outcome.error)) {
           trackOrder(orderRef, { item: item || undefined, role: "buyer" });
-          setAmbiguousOrder({ ref: orderRef, hash: outcome.error.hash });
+          setAmbiguousOrder({ ref: orderRef, hash: outcome.error.hash, item });
         }
         return;
       }
@@ -232,7 +239,7 @@ export default function Buy() {
                   </a>
                 ) : null}
                 <Link
-                  to={`/pedido/${ambiguousOrder.ref}${itemQuery(item)}`}
+                  to={`/pedido/${ambiguousOrder.ref}${itemQuery(ambiguousOrder.item)}`}
                   className="font-medium underline"
                 >
                   Ver estado del pedido

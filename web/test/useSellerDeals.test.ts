@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   chunkBlockRange,
   mergeSellerOrderRefs,
+  partialProgressOnFailure,
   scanSellerOrderRefsFromCursor,
   MAX_LOG_BLOCK_RANGE,
   type SellerScanState,
@@ -142,5 +143,28 @@ describe("scanSellerOrderRefsFromCursor", () => {
     const result = await scanSellerOrderRefsFromCursor(prev, 250n, 100n, fetchChunk);
     expect(result).toEqual({ cursor: 250n, refs: [REF_A, REF_B, REF_C] });
     expect(fetchChunk).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("partialProgressOnFailure", () => {
+  const INITIAL_CURSOR = 99n; // deployBlock - 1n de ejemplo
+
+  it("sin cache (nunca se resolvió ningún chunk), no hay progreso que devolver", () => {
+    expect(partialProgressOnFailure(undefined, INITIAL_CURSOR)).toBeUndefined();
+  });
+
+  it("cache en el cursor inicial (ningún chunk avanzó todavía), no hay progreso real", () => {
+    const cached: SellerScanState = { cursor: INITIAL_CURSOR, refs: [] };
+    expect(partialProgressOnFailure(cached, INITIAL_CURSOR)).toBeUndefined();
+  });
+
+  it("cache con el cursor avanzado en esta misma vuelta (vía onChunkDone) devuelve esos refs", () => {
+    const cached: SellerScanState = { cursor: 199n, refs: [REF_A] };
+    expect(partialProgressOnFailure(cached, INITIAL_CURSOR)).toEqual([REF_A]);
+  });
+
+  it("cache con progreso de una vuelta anterior (el chunk pendiente sigue fallando) también cuenta", () => {
+    const cached: SellerScanState = { cursor: 299n, refs: [REF_A, REF_B] };
+    expect(partialProgressOnFailure(cached, INITIAL_CURSOR)).toEqual([REF_A, REF_B]);
   });
 });

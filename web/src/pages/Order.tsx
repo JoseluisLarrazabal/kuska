@@ -25,7 +25,7 @@ import { useNow } from "../lib/ui/useNow";
 import { canOpenDisputeWindow, canReleaseAfterWindow, canRequestRefund } from "../lib/ui/dealTiming";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { endSentence, formatDeadline } from "../lib/ui/format";
-import { listTrackedOrders, trackOrder } from "../lib/ui/orderRegistry";
+import { findTrackedOrder, trackOrder } from "../lib/ui/orderRegistry";
 
 const HEX32_RE = /^0x[0-9a-fA-F]{64}$/;
 
@@ -48,7 +48,7 @@ export default function Order() {
   // `/pedido/:ref` sin el query param mostraba el pedido sin referencia
   // aunque este mismo dispositivo la hubiera visto antes.
   const item = useMemo(
-    () => itemParam ?? (validRef ? listTrackedOrders().find((o) => o.ref === validRef)?.item : undefined),
+    () => itemParam ?? (validRef ? findTrackedOrder(validRef)?.item : undefined),
     [itemParam, validRef],
   );
   const { data: deal, isLoading, isError, refetch } = useDeal(validRef);

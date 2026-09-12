@@ -96,7 +96,9 @@ export default function Demo() {
   // timeout/`TX_REVERTED` armando un deal de demo perdía el `orderRef` para
   // siempre y un reintento fondeaba un segundo pedido encima de fondos que
   // podían haber quedado en custodia sin que nadie los viera.
-  const [ambiguousDemoOrder, setAmbiguousDemoOrder] = useState<{ ref: Hex; hash?: string } | null>(null);
+  const [ambiguousDemoOrder, setAmbiguousDemoOrder] = useState<
+    { ref: Hex; hash?: string; item: string } | null
+  >(null);
   const [importKeyInput, setImportKeyInput] = useState("");
   const [importStatus, setImportStatus] = useState<"idle" | "done" | "error">("idle");
   const [importMessage, setImportMessage] = useState<string | null>(null);
@@ -160,6 +162,10 @@ export default function Demo() {
     setCreating(kind);
     setCreateError(null);
     setAmbiguousDemoOrder(null);
+    // Capturado una sola vez acá: es el label que efectivamente se trackea
+    // para este deal, tanto si falla ambiguo como si sale bien — evita que
+    // `ambiguousDemoOrder` (y su link de recuperación) queden sin `item`.
+    const item = kind === "refund" ? "Deal de reembolso (demo)" : "Deal normal (demo)";
     try {
       const buyer = getOrCreateAccount();
       const { orderRef, outcome } = await createOrder({
@@ -176,12 +182,12 @@ export default function Demo() {
         // reintento fondeaba un segundo pedido encima de fondos que podían
         // haber quedado en custodia.
         if (relayErrorMaybeSentTx(outcome.error)) {
-          trackOrder(orderRef, { role: "demo", item: kind === "refund" ? "Deal de reembolso (demo)" : "Deal normal (demo)" });
-          setAmbiguousDemoOrder({ ref: orderRef, hash: outcome.error.hash });
+          trackOrder(orderRef, { role: "demo", item });
+          setAmbiguousDemoOrder({ ref: orderRef, hash: outcome.error.hash, item });
           setDemoOrders(listTrackedOrders().filter((o) => o.role === "demo"));
         }
       } else {
-        trackOrder(orderRef, { role: "demo", item: kind === "refund" ? "Deal de reembolso (demo)" : "Deal normal (demo)" });
+        trackOrder(orderRef, { role: "demo", item });
         setDemoOrders(listTrackedOrders().filter((o) => o.role === "demo"));
       }
     } catch (err) {
@@ -490,7 +496,14 @@ export default function Demo() {
                     Ver la transacción en el explorer
                   </a>
                 ) : null}
-                <Link to={`/pedido/${ambiguousDemoOrder.ref}`} className="font-medium underline">
+                <Link
+                  to={`/pedido/${ambiguousDemoOrder.ref}${
+                    ambiguousDemoOrder.item
+                      ? `?item=${encodeURIComponent(capItem(ambiguousDemoOrder.item))}`
+                      : ""
+                  }`}
+                  className="font-medium underline"
+                >
                   Ver estado del pedido
                 </Link>
               </div>

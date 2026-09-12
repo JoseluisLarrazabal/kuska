@@ -42,12 +42,26 @@ export function listTrackedOrders(): TrackedOrder[] {
   return readAll().sort((a, b) => b.addedAt - a.addedAt);
 }
 
+/**
+ * Busca un pedido trackeado por `ref`, comparando sin distinguir
+ * mayúsculas/minúsculas: los parsers (`parseOrderRefFromText`, el `:ref` de
+ * la ruta) aceptan cualquier capitalización hex, así que un mismo pedido
+ * podía guardarse con una capitalización y buscarse con otra — sin esto la
+ * búsqueda fallaba en silencio y `Order.tsx` mostraba el pedido sin el
+ * `item` que este dispositivo ya había visto antes.
+ */
+export function findTrackedOrder(ref: Hex): TrackedOrder | undefined {
+  const target = ref.toLowerCase();
+  return readAll().find((o) => o.ref.toLowerCase() === target);
+}
+
 export function trackOrder(
   ref: Hex,
   extra: Partial<Pick<TrackedOrder, "item" | "role">> = {},
 ): void {
   const orders = readAll();
-  const existingIndex = orders.findIndex((o) => o.ref === ref);
+  const target = ref.toLowerCase();
+  const existingIndex = orders.findIndex((o) => o.ref.toLowerCase() === target);
   if (existingIndex >= 0) {
     const existing = orders[existingIndex];
     if (!existing) return;
@@ -60,5 +74,6 @@ export function trackOrder(
 }
 
 export function untrackOrder(ref: Hex): void {
-  writeAll(readAll().filter((o) => o.ref !== ref));
+  const target = ref.toLowerCase();
+  writeAll(readAll().filter((o) => o.ref.toLowerCase() !== target));
 }

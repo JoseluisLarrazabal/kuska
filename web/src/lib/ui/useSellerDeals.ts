@@ -129,6 +129,23 @@ function sellerScanCacheKey(escrowAddress: Address, seller: Address): string {
   return `${escrowAddress.toLowerCase()}:${seller.toLowerCase()}`;
 }
 
+/**
+ * Decide si, ante un chunk que falló, conviene devolver el progreso ya
+ * cacheado en vez de propagar el error: solo si `cached.cursor` avanzó más
+ * allá de `initialCursor` (el cursor de arranque, `deployBlock - 1n`), es
+ * decir, al menos un chunk se resolvió con éxito en esta vuelta (vía
+ * `onChunkDone`) o en una anterior. Sin progreso real, no hay nada que
+ * conservar — se debe seguir propagando el error para que el aviso no
+ * bloqueante de `Seller.tsx` siga apareciendo. Pura (no toca cache ni red):
+ * esto es lo que la hace testeable sin mockear el cliente RPC.
+ */
+export function partialProgressOnFailure(
+  cached: SellerScanState | undefined,
+  initialCursor: bigint,
+): Hex[] | undefined {
+  return cached && cached.cursor > initialCursor ? cached.refs : undefined;
+}
+
 async function fetchSellerOrderRefs(seller: Address): Promise<Hex[]> {
   const client = getPublicClient();
   const { escrowAddress, deployBlock } = getDeploymentConfig();
@@ -146,36 +163,56 @@ async function fetchSellerOrderRefs(seller: Address): Promise<Hex[]> {
   }
 
   const key = sellerScanCacheKey(escrowAddress, seller);
-  const prev = sellerScanCache.get(key) ?? { cursor: deployBlock - 1n, refs: [] };
+  const initialCursor = deployBlock - 1n;
+  const prev = sellerScanCache.get(key) ?? { cursor: initialCursor, refs: [] };
   const latest = await client.getBlockNumber();
 
-  const next = await scanSellerOrderRefsFromCursor(
-    prev,
-    latest,
-    MAX_LOG_BLOCK_RANGE,
-    async (fromBlock, toBlock) => {
-      const logs = await client.getContractEvents({
-        address: escrowAddress,
-        abi: kuskaEscrowAbi,
-        eventName: "Deposited",
-        args: { seller },
-        fromBlock,
-        toBlock,
-      });
-      const chunkRefs: Hex[] = [];
-      for (const log of logs) {
-        if (log.args.orderRef) chunkRefs.push(log.args.orderRef);
-      }
-      return chunkRefs;
-    },
-    // Persistir el progreso de CADA chunk ya resuelto, no solo el resultado
-    // final — si un chunk más adelante en esta misma vuelta falla, el
-    // `await` de acá arriba nunca llega a devolver `next`, así que sin este
-    // callback el progreso de los chunks previos se perdía igual.
-    (state) => sellerScanCache.set(key, state),
-  );
-  sellerScanCache.set(key, next);
-  return next.refs;
+  try {
+    const next = await scanSellerOrderRefsFromCursor(
+      prev,
+      latest,
+      MAX_LOG_BLOCK_RANGE,
+      async (fromBlock, toBlock) => {
+        const logs = await client.getContractEvents({
+          address: escrowAddress,
+          abi: kuskaEscrowAbi,
+          eventName: "Deposited",
+          args: { seller },
+          fromBlock,
+          toBlock,
+        });
+        const chunkRefs: Hex[] = [];
+        for (const log of logs) {
+          if (log.args.orderRef) chunkRefs.push(log.args.orderRef);
+        }
+        return chunkRefs;
+      },
+      // Persistir el progreso de CADA chunk ya resuelto, no solo el resultado
+      // final — si un chunk más adelante en esta misma vuelta falla, el
+      // `await` de acá arriba nunca llega a devolver `next`, así que sin este
+      // callback el progreso de los chunks previos se perdía igual.
+      (state) => sellerScanCache.set(key, state),
+    );
+    sellerScanCache.set(key, next);
+    return next.refs;
+  } catch (err) {
+    // Un chunk pendiente puede seguir fallando (límite del RPC, red) vuelta
+    // tras vuelta. Sin esto, `queryFn` tiraba siempre que el chunk pendiente
+    // fallara — aunque `onChunkDone` ya hubiera guardado en cache refs de
+    // chunks anteriores (de esta vuelta o de una anterior) — y react-query
+    // nunca llegaba a ver esos refs: los pedidos ya descubiertos quedaban
+    // invisibles mientras el fallo persistiera. Si hay progreso real en
+    // cache, se devuelve ese progreso en vez de tirar; si no hay ninguno
+    // todavía, se sigue tirando (mismo comportamiento que antes) para que el
+    // aviso no bloqueante de `Seller.tsx` siga mostrándose.
+    const cached = sellerScanCache.get(key);
+    const partial = partialProgressOnFailure(cached, initialCursor);
+    if (partial) {
+      console.warn("useSellerDeals: un chunk de escaneo falló, usando progreso parcial en cache.", err);
+      return partial;
+    }
+    throw err;
+  }
 }
 
 /**
