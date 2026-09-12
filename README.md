@@ -115,7 +115,7 @@ docs/          Frozen escrow interface (source of truth) and brand tokens
 
 - **Foundry**, Solidity `0.8.28`, `evm_version = "prague"` (pinned in [`foundry.toml`](contracts/foundry.toml) — this is the target the live chain-133 deployment was compiled with).
 - **OpenZeppelin Contracts v5.1.0** (git submodule): `EIP712`, `ReentrancyGuard`, `SafeERC20`, `SignatureChecker`, `ERC20Permit`.
-- `KuskaEscrow.sol` — the escrow described above. No `Ownable`, no setters, no pause; state is written before any transfer (checks-effects-interactions); every transfer path uses `SafeERC20`; every state-changing external call is `nonReentrant`.
+- `KuskaEscrow.sol` — the escrow described above. No `Ownable`, no setters, no pause; state is written before any transfer (checks-effects-interactions); every transfer path uses `SafeERC20`; every fund-moving function (`depositWithPermit`, `release`, `releaseAfterWindow`, `refundExpired`, `cancel`, `resolveDispute`) is `nonReentrant`. `claimDelivery` and `dispute` are not — they move no funds and only write deal state after a signature check, and that check's ERC-1271 path resolves via `staticcall`, so a malicious smart-account signer can't reenter and mutate state during verification.
 - `MockUSD.sol` — a 6-decimal `ERC20Permit` demo stablecoin with a `faucet(address)` that mints 100 mUSD, gated by a 1-hour per-recipient cooldown.
 - `script/Deploy.s.sol` — deploys `KuskaEscrow` (and `MockUSD` if no `TOKEN_ADDRESS` is given) and writes `deployments/<chainId>.json`. Guarded against accidental redeploys (see [Getting started](#getting-started)).
 
