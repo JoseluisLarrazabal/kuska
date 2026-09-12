@@ -75,6 +75,10 @@ export const mockUsdAbi = parseAbi([
   "function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)",
   "function nonces(address owner) view returns (uint256)",
   "function DOMAIN_SEPARATOR() view returns (bytes32)",
+  // custom error real de OZ v5 `ERC20Permit`/`EIP712` — sin esto en el abi,
+  // viem no puede decodificar un revert de `permit()` con firma vencida y
+  // `findRevertedError` cae a "UNKNOWN" aunque el nodo sí mande el selector.
+  "error ERC2612ExpiredSignature(uint256 deadline)",
 
   // --- EIP-5267 (dominio EIP-712 vía OZ EIP712) ---
   "function eip712Domain() view returns (bytes1 fields, string name, string version, uint256 chainId, address verifyingContract, bytes32 salt, uint256[] extensions)",

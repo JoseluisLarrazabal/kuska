@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { encodeErrorResult, parseAbi, ContractFunctionRevertedError, type Hex } from "viem";
+import {
+  encodeErrorResult,
+  parseAbi,
+  ContractFunctionRevertedError,
+  InsufficientFundsError,
+  NonceTooLowError,
+  RpcRequestError,
+  TransactionExecutionError,
+  type Hex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { handleRelay, relayRequestSchema, type RelayDeps } from "../server/relay";
 import { kuskaEscrowAbi } from "../src/lib/escrow/abi";
@@ -16,6 +25,35 @@ const PERMIT_SIG = ("0x" + "22".repeat(64) + "1c") as Hex;
 const relayerAccount = privateKeyToAccount(
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
 );
+
+// ---------------------------------------------------------------------------
+// Errores REALES de viem, con la misma forma que `writeContract` tira de
+// verdad (`TransactionExecutionError` envolviendo la causa reclasificada por
+// `getNodeError` — ver server/viemErrors.ts). Usar estos en vez de
+// `new Error("nonce too low")` plano: ese `Error` nunca hubiera pasado por
+// `isNonceError` una vez que dejó de matchear sobre `.message` (fix ALTO 1).
+// ---------------------------------------------------------------------------
+
+function nonceTooLowError(nonce = 5): TransactionExecutionError {
+  return new TransactionExecutionError(new NonceTooLowError({ nonce }), { account: null, nonce });
+}
+
+function replacementUnderpricedError(): TransactionExecutionError {
+  // viem 2.56.3 no tiene una clase dedicada para este caso del nodo: queda
+  // como `RpcRequestError` cruda colgada de `cause` (ver
+  // getTransactionError.js: si `getNodeError` no matchea ningún regex,
+  // devuelve el error original tal cual, sin reclasificar).
+  const rpcError = new RpcRequestError({
+    body: { method: "eth_sendRawTransaction" },
+    error: { code: -32000, message: "replacement transaction underpriced" },
+    url: "https://testnet.hsk.xyz",
+  });
+  return new TransactionExecutionError(rpcError, { account: null });
+}
+
+function insufficientFundsError(): TransactionExecutionError {
+  return new TransactionExecutionError(new InsufficientFundsError({}), { account: null });
+}
 
 const dealDefaults = {
   buyer: "0x3333333333333333333333333333333333333333" as const,
@@ -142,7 +180,7 @@ describe("handleRelay", () => {
   it("reintenta hasta con éxito ante un error de nonce en el primer intento", async () => {
     const { deps, walletClient, publicClient } = createDeps();
     walletClient.writeContract
-      .mockRejectedValueOnce(new Error("nonce too low"))
+      .mockRejectedValueOnce(nonceTooLowError())
       .mockResolvedValueOnce("0xhash000000000000000000000000000000000000000000000000000000000002");
 
     const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
@@ -229,7 +267,7 @@ describe("handleRelay", () => {
   it("reintenta ante 'replacement transaction underpriced' y responde 200", async () => {
     const { deps, walletClient, publicClient } = createDeps();
     walletClient.writeContract
-      .mockRejectedValueOnce(new Error("replacement transaction underpriced"))
+      .mockRejectedValueOnce(replacementUnderpricedError())
       .mockResolvedValueOnce(
         "0xhash000000000000000000000000000000000000000000000000000000000004",
       );
@@ -241,14 +279,41 @@ describe("handleRelay", () => {
     expect(publicClient.getTransactionCount).toHaveBeenCalledTimes(2);
   });
 
-  it("502 RPC_ERROR tras agotar los reintentos de nonce (tope maxNonceRetries)", async () => {
+  // `maxNonceRetries` cuenta REINTENTOS tras el intento inicial (fix BAJO 7):
+  // con 2, son hasta 3 llamadas totales a `writeContract` (1 inicial + 2
+  // reintentos), no 2.
+  it("502 RPC_ERROR tras agotar los reintentos de nonce (tope maxNonceRetries: 3 intentos totales)", async () => {
     const { deps, walletClient } = createDeps({ maxNonceRetries: 2 });
-    walletClient.writeContract.mockRejectedValue(new Error("nonce too low"));
+    walletClient.writeContract.mockRejectedValue(nonceTooLowError());
 
     const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
 
     expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
-    expect(walletClient.writeContract).toHaveBeenCalledTimes(2);
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(3);
+  });
+
+  it("con maxNonceRetries: 0 se hace exactamente 1 intento (ni 0 ni un `throw undefined`)", async () => {
+    const { deps, walletClient } = createDeps({ maxNonceRetries: 0 });
+    walletClient.writeContract.mockRejectedValue(nonceTooLowError());
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(1);
+  });
+
+  // -- fix ALTO 1: NO reintentar (ni pagar el gas dos veces) ante un error
+  // de write que no es de nonce ------------------------------------------
+
+  it("NO reintenta ante 'insufficient funds': writeContract se llama exactamente 1 vez y responde 502", async () => {
+    const { deps, walletClient, publicClient } = createDeps();
+    walletClient.writeContract.mockRejectedValue(insufficientFundsError());
+
+    const result = await handleRelay({ action: "deposit", params: depositParams }, deps);
+
+    expect(result).toEqual({ status: 502, body: { code: "RPC_ERROR" } });
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(1);
+    expect(publicClient.getTransactionCount).toHaveBeenCalledTimes(1);
   });
 
   // -- fix getCode -> 503 MISCONFIGURED -----------------------------------
