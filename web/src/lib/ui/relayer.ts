@@ -69,22 +69,63 @@ const RELAY_ERROR_MESSAGES: Record<string, string> = {
 
 const DEFAULT_RELAY_MESSAGE = "La operación no se pudo completar. Intentá de nuevo.";
 
-// Códigos (docs/escrow-interface.md §6) cuya respuesta puede llegar DESPUÉS de
-// que el relayer ya mandó la transacción: `TX_REVERTED` (409, la tx minada
-// revirtió) y `RECEIPT_TIMEOUT` (504, se mandó pero no llegó a confirmarse
-// dentro del timeout — puede terminar confirmando igual). Nunca se clasifica
-// por texto del mensaje (decisión D41): siempre por el código.
-const TX_MAYBE_SENT_CODES = new Set(["TX_REVERTED", "RECEIPT_TIMEOUT"]);
+// Lista de códigos que PRUEBAN que `writeContract` nunca se llamó — los
+// únicos casos donde es seguro asumir que no se mandó ninguna tx. Derivado de
+// leer `server/relay.ts` línea por línea, ANTES de cada `return`, relativo al
+// único `writeContract` del pipeline (`writeWithNonceRetry`, paso 4):
+//
+//   - `INVALID_REQUEST`: `relayRequestSchema.safeParse` falla (relay.ts:391)
+//     — antes de cualquier llamada a la red.
+//   - `INVALID_SIGNATURE`: `verifySignature` da `false` (relay.ts:415) o
+//     `buildContractCall` tira, p. ej. `permitSig` malformado (relay.ts:423)
+//     — ambos antes de `simulateContract`/`writeContract`.
+//   - `SIMULATION_REVERTED`: `simulateContract` revierte (relay.ts:441) —
+//     `simulateContract` es un `eth_call` de solo lectura, nunca manda una tx.
+//   - `MISCONFIGURED`: el escrow no tiene bytecode (relay.ts:406) — o, en
+//     `api/relay.ts:35`, `getServerConfig`/`getRelayerClients` tiran ANTES de
+//     construir `RelayDeps` y de que `handleRelay` corra un solo paso.
+//
+// `RPC_ERROR` (502) queda AFUERA de esta lista a propósito, aunque también se
+// devuelve antes de mandar la tx en tres lugares (relay.ts:404 `isContractAddress`,
+// :413 `verifySignature`, :443 `simulateContract` no-revert): el MISMO código
+// se devuelve en relay.ts:451, dentro del catch de `writeWithNonceRetry`, es
+// decir DESPUÉS de haber intentado `writeContract` (p. ej. el nodo aceptó la
+// tx pero la llamada RPC que esperaba la respuesta expiró). Como se clasifica
+// solo por código (nunca por dónde se originó ni por texto — decisión D41),
+// `RPC_ERROR` tiene que tratarse como "puede haber mandado" siempre.
+//
+// Tampoco entran acá los códigos que arma el CLIENTE (nunca vienen de
+// `handleRelay`): `NETWORK_ERROR` (el `fetch` tira — puede ser que el server
+// ya haya mandado la tx y la respuesta nunca llegó, p. ej. el cliente perdió
+// conexión) y cualquier `HTTP_<status>` (respuesta sin JSON parseable — el
+// caso real es un timeout de plataforma de Vercel: `api/relay.ts` declara
+// `maxDuration: 30`, pero el pipeline puede tardar más — hasta 20s solo en
+// `waitForTransactionReceipt`, más las llamadas RPC previas —, así que
+// Vercel puede cortar la función a mitad de camino, DESPUÉS de que
+// `writeContract` ya mandó la tx, y el cliente recibe un 504 sin cuerpo).
+//
+// Cualquier código futuro y desconocido tampoco entra en la lista: rastrear
+// de más un pedido que nunca se fondeó es inofensivo (la página del pedido
+// simplemente lo muestra como no encontrado); rastrear de menos uno que sí se
+// fondeó deja plata en custodia sin que nadie la vea. Se prefiere el primer
+// error.
+const RELAY_DEFINITELY_NOT_SENT_CODES = new Set([
+  "INVALID_REQUEST",
+  "INVALID_SIGNATURE",
+  "SIMULATION_REVERTED",
+  "MISCONFIGURED",
+]);
 
 /**
  * ¿Esta falla del relayer pudo haber llegado a mandar (o dejar pendiente de
- * confirmar) una transacción on-chain? Si trae `hash`, seguro que sí. Si no,
- * solo los dos códigos ambiguos de arriba. El resto (validación, firma
- * inválida, simulación revertida, rate-limit, red, mal configurado) nunca
- * llegó a `writeContract` — no hay nada que rastrear.
+ * confirmar) una transacción on-chain? Deny-by-default invertido: se
+ * considera que SÍ pudo haber mandado la tx salvo que el código pruebe lo
+ * contrario (ver `RELAY_DEFINITELY_NOT_SENT_CODES` arriba). Si trae `hash`,
+ * ya se sabe que sí. Nunca se clasifica por texto del mensaje (decisión D41).
  */
 export function relayErrorMaybeSentTx(error: RelayOutcomeError): boolean {
-  return error.hash !== undefined || TX_MAYBE_SENT_CODES.has(error.code);
+  if (error.hash !== undefined) return true;
+  return !RELAY_DEFINITELY_NOT_SENT_CODES.has(error.code);
 }
 
 function describeRelayError(body: Record<string, unknown>): string {
