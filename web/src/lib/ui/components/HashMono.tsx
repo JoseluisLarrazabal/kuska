@@ -38,14 +38,14 @@ export function HashMono({ value, href, hrefLabel = "Ver en el explorer", chars 
   }
 
   return (
-    <span className={`inline-flex min-w-0 max-w-full items-center gap-1.5 font-mono text-xs tabular-nums ${className}`}>
+    <span className={`inline-flex min-w-0 max-w-full items-center gap-2 font-mono text-xs tabular-nums ${className}`}>
       <span className="truncate" title={value}>
         {truncateHex(value, chars)}
       </span>
       <button
         type="button"
         onClick={copy}
-        className="tap-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-current opacity-70 hover:opacity-100"
+        className="tap-target-icon inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-current opacity-70 hover:opacity-100"
         aria-label={copied ? "Copiado" : "Copiar"}
       >
         <CopyIcon size={14} />

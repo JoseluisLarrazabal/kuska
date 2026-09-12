@@ -12,7 +12,7 @@ interface QrCodeProps {
  */
 export function QrCode({ value, size = 240, className = "" }: QrCodeProps) {
   return (
-    <div className={`inline-flex rounded-card bg-blanco p-5 ${className}`}>
+    <div className={`inline-flex rounded-card bg-blanco p-5 shadow-sm ${className}`}>
       <QRCodeSVG
         value={value}
         size={size}

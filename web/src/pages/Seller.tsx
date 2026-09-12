@@ -91,7 +91,7 @@ export default function Seller() {
   }, [discoveredRefs, trackedRefs, hiddenRefs, orders]);
 
   return (
-    <Layout>
+    <Layout wide>
       <h1 className="mt-6 font-display text-[26px] font-medium text-verde">Tus pedidos</h1>
       <p className="mt-1 text-sm text-verde-mut">
         Cuenta de vendedor: <AddressMono address={seller.address} />
@@ -265,7 +265,7 @@ function SellerOrderCard({
           <p className="font-mono text-xs text-verde-mut">Pedido #{order.ref.slice(2, 8)}</p>
           <QrCode value={buildConfirmUrl(order.ref, order.item)} />
           <p className="text-sm font-medium text-verde">Pedile al comprador que escanee</p>
-          <Countdown label="Ventana de disputa:" deadline={disputeDeadline} />
+          <Countdown label="Ventana de disputa:" deadline={disputeDeadline} size="lg" />
         </div>
       ) : null}
 
