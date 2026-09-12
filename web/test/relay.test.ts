@@ -190,6 +190,38 @@ describe("handleRelay", () => {
     expect(publicClient.getTransactionCount).toHaveBeenCalledTimes(2);
   });
 
+  // -- fix BAJO 6: mutex de nonce en proceso -------------------------------
+
+  it("serializa lectura-de-nonce + writeContract dentro de la misma instancia: dos llamadas concurrentes nunca se pisan", async () => {
+    const { deps, publicClient, walletClient } = createDeps();
+    let inFlight = 0;
+    let overlapped = false;
+    let hashCounter = 0;
+
+    publicClient.getTransactionCount.mockImplementation(async () => {
+      inFlight++;
+      if (inFlight > 1) overlapped = true;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return inFlight;
+    });
+    walletClient.writeContract.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      hashCounter++;
+      return `0x${hashCounter.toString().padStart(64, "0")}` as Hex;
+    });
+
+    const [a, b] = await Promise.all([
+      handleRelay({ action: "refundExpired", params: { orderRef: ORDER_REF } }, deps),
+      handleRelay({ action: "refundExpired", params: { orderRef: ORDER_REF } }, deps),
+    ]);
+
+    expect(overlapped).toBe(false);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(publicClient.getTransactionCount).toHaveBeenCalledTimes(2);
+  });
+
   it("504 RECEIPT_TIMEOUT con el hash cuando el receipt tarda demasiado", async () => {
     const { deps, publicClient } = createDeps();
     publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("timeout"));

@@ -311,6 +311,36 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ---------------------------------------------------------------------------
+// Mutex en memoria de proceso: serializa, DENTRO de esta instancia, la sección
+// crítica lectura-de-nonce-pending → envío de la tx. Sin esto, dos
+// `POST /api/relay` concurrentes en la misma instancia leen el mismo
+// `getTransactionCount({blockTag:"pending"})` y arman dos tx con el mismo
+// nonce: el perdedor normalmente se reintenta (ver `isNonceError`), pero un
+// reemplazo puede huerfanar una tx de escrow legítima ya aceptada por el nodo
+// (el primer caller recibe después un `504 RECEIPT_TIMEOUT` para un hash que
+// nunca mina).
+//
+// OJO — esto SOLO sirve dentro de UNA instancia de proceso. En serverless
+// (Vercel) cada instancia fría tiene su propia cola en memoria: dos requests
+// concurrentes atendidas por DOS instancias distintas siguen pudiendo
+// pisarse el nonce entre sí. Un lock cross-instancia (p. ej. Upstash Redis)
+// queda explícitamente FUERA de alcance para esta demo — sigue siendo una
+// limitación abierta.
+// ---------------------------------------------------------------------------
+let nonceMutexTail: Promise<void> = Promise.resolve();
+
+function withNonceMutex<T>(fn: () => Promise<T>): Promise<T> {
+  const run = nonceMutexTail.then(fn, fn);
+  // encadenar SIEMPRE la cola siguiente (incluso si `run` rechaza), para que
+  // el fallo de un caller no bloquee para siempre a los que esperan detrás.
+  nonceMutexTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function writeWithNonceRetry(
   deps: RelayDeps,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -325,15 +355,17 @@ async function writeWithNonceRetry(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) await sleep(250); // <= 500ms entre reintentos (docs §6)
     try {
-      const nonce = await deps.publicClient.getTransactionCount({
-        address: deps.relayerAccount.address,
-        blockTag: "pending",
-      });
-      return await deps.walletClient.writeContract({
-        ...request,
-        account: deps.relayerAccount,
-        chain: deps.walletClient.chain,
-        nonce,
+      return await withNonceMutex(async () => {
+        const nonce = await deps.publicClient.getTransactionCount({
+          address: deps.relayerAccount.address,
+          blockTag: "pending",
+        });
+        return await deps.walletClient.writeContract({
+          ...request,
+          account: deps.relayerAccount,
+          chain: deps.walletClient.chain,
+          nonce,
+        });
       });
     } catch (err) {
       lastError = err;
