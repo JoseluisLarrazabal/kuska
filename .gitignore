@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+web/.env.local
+.vercel/
+*.log
+.DS_Store
+
+# Claude Code worktrees and local state
+.claude/
