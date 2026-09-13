@@ -5,15 +5,22 @@ import { handleRelay, type RelayDeps } from "../server/relay.js";
 // Vercel Functions (Node.js runtime, firma estándar Web Fetch para proyectos
 // no-Next — ver "Create Vercel Function for Other Frameworks",
 // https://vercel.com/docs/functions/quickstart).
+//
+// Para proyectos "other" (no-Next, este caso) el `config` object sigue siendo
+// el mecanismo documentado -- la alternativa `export const maxDuration`
+// "pelada" (route segment options) es específica de Next.js App Router (ver
+// https://vercel.com/docs/functions/functions-api-reference?framework=other,
+// sección "config object": el bloque ["other"] solo muestra `config`).
 export const config = {
   maxDuration: 30,
 };
 
-export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== "POST") {
-    return Response.json({ code: "INVALID_REQUEST" }, { status: 405 });
-  }
-
+// Vercel Functions (Node.js runtime) despacha por método a la named export
+// que matchee (`GET`, `POST`, ...) -- un `export default` se trata como la
+// firma legacy `(req, res) => void` e ignora el `Response` devuelto (ver
+// docs/handoff.md). Este handler solo sirve POST, así que exporta únicamente
+// `POST`; cualquier otro método lo devuelve Vercel mismo como 405.
+export async function POST(request: Request): Promise<Response> {
   let body: unknown;
   try {
     body = await request.json();
