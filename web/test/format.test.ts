@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   endSentence,
+  formatCountdown,
   formatDeadline,
   formatHskAmount,
   insufficientFundsMessage,
@@ -114,8 +115,44 @@ describe("insufficientFundsMessage", () => {
     expect(message).toContain("tenés 3.45");
   });
 
-  it("menciona el botón del faucet como salida", () => {
+  it("menciona el botón del faucet como salida (default, testnet)", () => {
     expect(insufficientFundsMessage(0n, 1_000_000n)).toMatch(/botón de arriba/i);
+  });
+
+  it("con faucetAvailable=false (mainnet) no menciona un botón que no existe", () => {
+    const message = insufficientFundsMessage(0n, 1_000_000n, false);
+    expect(message).not.toMatch(/botón de arriba/i);
+    expect(message).toContain("necesitás 1.00");
+  });
+});
+
+describe("formatCountdown", () => {
+  it("0 segundos", () => {
+    expect(formatCountdown(0)).toBe("00:00");
+  });
+
+  it("59 segundos (justo bajo 1 minuto)", () => {
+    expect(formatCountdown(59)).toBe("00:59");
+  });
+
+  it("60 segundos (1 minuto exacto)", () => {
+    expect(formatCountdown(60)).toBe("01:00");
+  });
+
+  it("3599 segundos (justo bajo 1 hora): sigue en mm:ss", () => {
+    expect(formatCountdown(3599)).toBe("59:59");
+  });
+
+  it("3600 segundos (1 hora exacta): rollover a horas", () => {
+    expect(formatCountdown(3600)).toBe("1 h 0 min");
+  });
+
+  it("86400 segundos (24h, ventana de disputa de mainnet)", () => {
+    expect(formatCountdown(86400)).toBe("24 h 0 min");
+  });
+
+  it("negativo/pasado: clampea a 00:00, nunca negativo", () => {
+    expect(formatCountdown(-100)).toBe("00:00");
   });
 });
 

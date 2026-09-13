@@ -51,12 +51,23 @@ export function formatDemoUsd(amount: bigint): string {
  * avisar pide el faucet automáticamente porque ahí el "comprador" es una
  * cuenta de demo descartable; acá es la compra real, así que solo se bloquea
  * y se explica — no se le pide plata de mentira a la cuenta del usuario.
+ *
+ * `faucetAvailable` (default `true`, mantiene el mensaje histórico) indica si
+ * el botón del faucet manual existe en esta red — en mainnet (chain 177)
+ * `/api/faucet` no existe (`server/faucet.ts`), así que ahí no se puede
+ * referenciar "el botón de arriba".
  */
-export function insufficientFundsMessage(balance: bigint, amount: bigint): string {
-  return (
+export function insufficientFundsMessage(
+  balance: bigint,
+  amount: bigint,
+  faucetAvailable = true,
+): string {
+  const base =
     `Tu cuenta no tiene mUSD suficientes para este pago (necesitás ${formatDemoUsd(amount)}, ` +
-    `tenés ${formatDemoUsd(balance)}). Pedí mUSD de prueba con el botón de arriba.`
-  );
+    `tenés ${formatDemoUsd(balance)}).`;
+  return faucetAvailable
+    ? `${base} Pedí mUSD de prueba con el botón de arriba.`
+    : `${base} Pedile mUSD de prueba a quien esté operando la demo — en esta red no hay faucet automático.`;
 }
 
 /**
@@ -115,9 +126,19 @@ export function truncateHex(value: string, chars = 4): string {
   return `${value.slice(0, chars + 2)}…${value.slice(-chars)}`;
 }
 
-/** `mm:ss` para una cuenta regresiva; `00:00` si ya pasó. */
+/**
+ * `mm:ss` para una cuenta regresiva bajo 1 hora; `Nh Nmin` (redondeado hacia
+ * abajo al minuto) a partir de 1 hora — sin esto, la ventana de disputa de
+ * mainnet (86400s = 24h) se mostraba como `1439:07`, ilegible. `00:00` si ya
+ * pasó (clamp a 0, nunca negativo).
+ */
 export function formatCountdown(secondsRemaining: number): string {
   const clamped = Math.max(0, Math.floor(secondsRemaining));
+  if (clamped >= 3600) {
+    const h = Math.floor(clamped / 3600);
+    const m = Math.floor((clamped % 3600) / 60);
+    return `${h} h ${m} min`;
+  }
   const m = Math.floor(clamped / 60);
   const s = clamped % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;

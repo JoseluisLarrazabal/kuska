@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { isAddress, type Address, type Hex } from "viem";
 import { Layout } from "../lib/ui/components/Layout";
@@ -6,6 +7,7 @@ import { Field } from "../lib/ui/components/Field";
 import { Button } from "../lib/ui/components/Button";
 import { Banner } from "../lib/ui/components/Banner";
 import { AddressMono } from "../lib/ui/components/AddressMono";
+import { AmountMono } from "../lib/ui/components/AmountMono";
 import { HashMono } from "../lib/ui/components/HashMono";
 import { getOrCreateAccount } from "../lib/burner";
 import { isBurnerPersistent } from "../lib/ui/burnerStatus";
@@ -18,6 +20,7 @@ import { postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { txExplorerUrl } from "../lib/ui/explorer";
 import { getPublicClient } from "../lib/ui/viemClient";
 import { getTokenBalance } from "../lib/ui/token";
+import { useTokenBalance } from "../lib/ui/useTokenBalance";
 import { DropletIcon } from "../lib/ui/components/Icon";
 
 /** `deliveryDeadline` del flujo en vivo (docs/escrow-interface.md §4: now + 1800s). */
@@ -35,6 +38,11 @@ export default function Buy() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const deployment = getDeploymentConfig();
+  const queryClient = useQueryClient();
+  // El faucet automático (`/api/faucet`) no existe en mainnet (chain 177) —
+  // por diseño, 404 (`server/faucet.ts`). No hardcodeamos `=== 177` suelto en
+  // el JSX: esta flag derivada es el único lugar que lo sabe.
+  const faucetAvailable = deployment.chainId !== 177;
 
   const [seller, setSeller] = useState<string>(deployment.demoSeller);
   const [amountInput, setAmountInput] = useState("10");
@@ -68,6 +76,10 @@ export default function Buy() {
   // recargar, aunque el guardado hubiera funcionado perfectamente.
   const buyerPreview = useMemo(() => getOrCreateAccount().address, []);
   const persistent = useMemo(() => isBurnerPersistent(), [buyerPreview]);
+  // Saldo de mUSD de la cuenta local, para mostrarlo abajo del "Tu cuenta
+  // local". Lectura silenciosa: si falla o está cargando, la línea
+  // simplemente no aparece — el chequeo autoritativo sigue en `submit()`.
+  const { data: buyerBalance } = useTokenBalance(buyerPreview);
   const sellerIsLocalAccount = isAddress(seller) && seller.toLowerCase() === buyerPreview.toLowerCase();
   const sellerError = seller.length > 0 && !isAddress(seller)
     ? "Dirección inválida (0x + 40 hex)."
@@ -94,6 +106,7 @@ export default function Buy() {
     if (outcome.ok) {
       setFaucetStatus("done");
       setFaucetMessage("Listo: le acreditamos 100 mUSD (demo) a tu cuenta.");
+      queryClient.invalidateQueries({ queryKey: ["tokenBalance", buyerPreview] });
     } else {
       setFaucetStatus("error");
       setFaucetMessage(outcome.message);
@@ -124,7 +137,7 @@ export default function Buy() {
         const balance = await getTokenBalance(getPublicClient(), deployment.tokenAddress, buyer.address);
         if (balance < amountUnits) {
           setStatus("error");
-          setErrorMessage(insufficientFundsMessage(balance, amountUnits));
+          setErrorMessage(insufficientFundsMessage(balance, amountUnits, faucetAvailable));
           return;
         }
       } catch (err) {
@@ -155,6 +168,7 @@ export default function Buy() {
       trackOrder(orderRef, { item: item || undefined, role: "buyer" });
       setTxHash(outcome.data.hash);
       setStatus("success");
+      queryClient.invalidateQueries({ queryKey: ["tokenBalance", buyerPreview] });
 
       setTimeout(() => navigate(`/pedido/${orderRef}${itemQuery(item)}`), 1200);
     } catch (err) {
@@ -171,8 +185,8 @@ export default function Buy() {
     <Layout>
       <h1 className="mt-6 font-display text-[26px] font-medium text-verde">Armar un pedido</h1>
       <p className="mt-1 text-sm text-verde-mut">
-        Fondeás en dólares digitales de demo. No pagás gas: nosotros mandamos la
-        transacción por vos.
+        La custodia es real, en {deployment.chain.name}. Fondeás en mUSD, un token de
+        prueba sin valor real. No pagás gas: lo mandamos nosotros.
       </p>
 
       {!persistent ? (
@@ -221,22 +235,24 @@ export default function Buy() {
           />
         </div>
 
-        <div className="mt-3">
-          <button
-            type="button"
-            onClick={requestFaucet}
-            disabled={faucetStatus === "loading"}
-            className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-verde-mut hover:text-verde disabled:opacity-60"
-          >
-            <DropletIcon size={16} />
-            {faucetStatus === "loading" ? "Pidiendo fondos…" : "Pedir mUSD de prueba para esta cuenta"}
-          </button>
-          {faucetMessage ? (
-            <p className={`mt-1 text-xs ${faucetStatus === "error" ? "text-terracota-ink" : "text-verde-mut"}`}>
-              {faucetMessage}
-            </p>
-          ) : null}
-        </div>
+        {faucetAvailable ? (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={requestFaucet}
+              disabled={faucetStatus === "loading"}
+              className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-verde-mut hover:text-verde disabled:opacity-60"
+            >
+              <DropletIcon size={16} />
+              {faucetStatus === "loading" ? "Pidiendo fondos…" : "Pedir mUSD de prueba para esta cuenta"}
+            </button>
+            {faucetMessage ? (
+              <p className={`mt-1 text-xs ${faucetStatus === "error" ? "text-terracota-ink" : "text-verde-mut"}`}>
+                {faucetMessage}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {status === "error" && errorMessage ? (
           <Banner kind="error" title="No se pudo fondear el pedido" className="mt-4">
@@ -301,6 +317,11 @@ export default function Buy() {
       <p className="mt-3 text-xs text-verde-mut">
         Tu cuenta local: <AddressMono address={buyerPreview} />
       </p>
+      {buyerBalance !== undefined ? (
+        <p className="mt-1 flex items-center gap-1.5 text-xs text-verde-mut">
+          Saldo: <AmountMono amount={buyerBalance} size="sm" />
+        </p>
+      ) : null}
     </Layout>
   );
 }

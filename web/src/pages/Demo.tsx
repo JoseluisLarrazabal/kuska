@@ -113,7 +113,11 @@ export default function Demo() {
   // `handleImportKey`/`doImportKey` más abajo.
   const [pendingImportKey, setPendingImportKey] = useState<string | null>(null);
 
-  const { demoSeller } = getDeploymentConfig();
+  const { demoSeller, chainId, chain } = getDeploymentConfig();
+  // El faucet automático (`/api/faucet`) no existe en mainnet (chain 177) —
+  // por diseño, 404 (`server/faucet.ts`). Derivado acá una sola vez en vez de
+  // comparar `=== 177` suelto en cada punto del JSX que lo necesita.
+  const faucetAvailable = chainId !== 177;
   // `sellerIsArbiter`: ¿el vendedor de demo configurado (VITE_DEMO_SELLER)
   // es la MISMA dirección que el árbitro del contrato? Si coinciden, el
   // árbitro terminaría siendo juez y parte — ver el comentario en
@@ -194,10 +198,18 @@ export default function Demo() {
       setFundingDemo(false);
       if (!funded.ok) {
         if (funded.reason === "faucet_failed") {
-          setCreateError(
-            `Tu cuenta local no tiene mUSD suficientes para este deal (25.00 mUSD) y el pedido ` +
-              `automático al faucet falló: ${describeFaucetFailure(funded.faucet)}`,
-          );
+          if (!faucetAvailable) {
+            setCreateError(
+              `Tu cuenta local no tiene mUSD suficientes para este deal (25.00 mUSD) y esta red ` +
+                `no tiene faucet automático. Fondeá la cuenta local manualmente con al menos ` +
+                `25.00 mUSD y volvé a intentar.`,
+            );
+          } else {
+            setCreateError(
+              `Tu cuenta local no tiene mUSD suficientes para este deal (25.00 mUSD) y el pedido ` +
+                `automático al faucet falló: ${describeFaucetFailure(funded.faucet)}`,
+            );
+          }
         } else {
           setCreateError(
             "Se pidieron 100 mUSD al faucet para tu cuenta local, pero el saldo todavía no se " +
@@ -385,8 +397,9 @@ export default function Demo() {
           contrato rechaza comprador == vendedor.
         </p>
         <p className="mt-1 text-sm font-medium text-terracota">
-          Es una llave de demo en testnet, sin valor real. Nunca pegues acá una llave privada de
-          verdad ni la de una cuenta con fondos reales.
+          Es una llave de demo en {chain.name}; el token que maneja (mUSD) es de prueba y no tiene
+          valor real. Nunca pegues acá una llave privada de verdad ni la de una cuenta con
+          fondos reales.
         </p>
         <form
           className="mt-3 flex flex-col gap-2 sm:flex-row"
@@ -458,44 +471,61 @@ export default function Demo() {
 
       <section className="mt-6 rounded-card bg-blanco p-4">
         <h2 className="text-[16px] font-semibold text-verde">Faucet de mUSD (demo)</h2>
-        <div className="mt-2 flex gap-2">
-          <label className="flex min-h-11 items-center gap-1.5 text-sm text-verde">
-            <input
-              type="radio"
-              name="faucet-target"
-              checked={faucetTarget === "local"}
-              onChange={() => setFaucetTarget("local")}
-              className="h-4 w-4"
-            />
-            Tu cuenta local
-          </label>
-          <label className="flex min-h-11 items-center gap-1.5 text-sm text-verde">
-            <input
-              type="radio"
-              name="faucet-target"
-              checked={faucetTarget === "seller"}
-              onChange={() => setFaucetTarget("seller")}
-              className="h-4 w-4"
-            />
-            Vendedor de demo
-          </label>
-        </div>
-        <Button className="mt-3 w-full" busy={faucetStatus === "loading"} onClick={requestFaucet}>
-          <DropletIcon size={16} />
-          Pedir 100 mUSD (demo)
-        </Button>
-        {faucetMessage ? (
-          <p className={`mt-2 text-sm ${faucetStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
-            {faucetMessage}
-          </p>
-        ) : null}
+        {faucetAvailable ? (
+          <>
+            <div className="mt-2 flex gap-2">
+              <label className="flex min-h-11 items-center gap-1.5 text-sm text-verde">
+                <input
+                  type="radio"
+                  name="faucet-target"
+                  checked={faucetTarget === "local"}
+                  onChange={() => setFaucetTarget("local")}
+                  className="h-4 w-4"
+                />
+                Tu cuenta local
+              </label>
+              <label className="flex min-h-11 items-center gap-1.5 text-sm text-verde">
+                <input
+                  type="radio"
+                  name="faucet-target"
+                  checked={faucetTarget === "seller"}
+                  onChange={() => setFaucetTarget("seller")}
+                  className="h-4 w-4"
+                />
+                Vendedor de demo
+              </label>
+            </div>
+            <Button className="mt-3 w-full" busy={faucetStatus === "loading"} onClick={requestFaucet}>
+              <DropletIcon size={16} />
+              Pedir 100 mUSD (demo)
+            </Button>
+            {faucetMessage ? (
+              <p className={`mt-2 text-sm ${faucetStatus === "error" ? "text-terracota" : "text-verde-mut"}`}>
+                {faucetMessage}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <Button className="mt-3 w-full" disabled>
+              <DropletIcon size={16} />
+              Pedir 100 mUSD (demo)
+            </Button>
+            <p className="mt-2 text-sm text-verde-mut">
+              No disponible en esta red: en mainnet no hay faucet automático. Fondeá las
+              cuentas de demo con mUSD antes del evento.
+            </p>
+          </>
+        )}
       </section>
 
       <section className="mt-6 rounded-card bg-blanco p-4">
         <h2 className="text-[16px] font-semibold text-verde">Deals pre-armados</h2>
         <p className="mt-1 text-sm text-verde-mut">
-          Usa tu cuenta local como comprador y el vendedor de demo. Si tu cuenta no tiene mUSD
-          suficientes, pide 100 mUSD al faucet automáticamente.
+          Usa tu cuenta local como comprador y el vendedor de demo.{" "}
+          {faucetAvailable
+            ? "Si tu cuenta no tiene mUSD suficientes, pide 100 mUSD al faucet automáticamente."
+            : "Esta red no tiene faucet automático: la cuenta local ya tiene que tener mUSD suficientes."}
         </p>
         {deviceIsDemoSeller ? (
           <Banner kind="warning" className="mt-3">
@@ -521,6 +551,12 @@ export default function Demo() {
             Armar deal de reembolso (vence en 2 min)
           </Button>
         </div>
+        {!faucetAvailable ? (
+          <p className="mt-2 text-sm text-verde-mut">
+            No hay faucet automático en esta red: para armar cualquiera de los dos deals, la
+            cuenta local ya tiene que tener al menos 25.00 mUSD.
+          </p>
+        ) : null}
         {fundingDemo ? (
           <p className="mt-2 text-sm text-verde-mut">
             Acreditando mUSD de prueba en tu cuenta local…
