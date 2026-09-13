@@ -113,7 +113,7 @@ export default function Demo() {
   // `handleImportKey`/`doImportKey` más abajo.
   const [pendingImportKey, setPendingImportKey] = useState<string | null>(null);
 
-  const { demoSeller, chainId } = getDeploymentConfig();
+  const { demoSeller, chainId, chain } = getDeploymentConfig();
   // El faucet automático (`/api/faucet`) no existe en mainnet (chain 177) —
   // por diseño, 404 (`server/faucet.ts`). Derivado acá una sola vez en vez de
   // comparar `=== 177` suelto en cada punto del JSX que lo necesita.
@@ -397,7 +397,7 @@ export default function Demo() {
           contrato rechaza comprador == vendedor.
         </p>
         <p className="mt-1 text-sm font-medium text-terracota">
-          Es una llave de demo en mainnet; el token que maneja (mUSD) es de prueba y no tiene
+          Es una llave de demo en {chain.name}; el token que maneja (mUSD) es de prueba y no tiene
           valor real. Nunca pegues acá una llave privada de verdad ni la de una cuenta con
           fondos reales.
         </p>
@@ -522,8 +522,10 @@ export default function Demo() {
       <section className="mt-6 rounded-card bg-blanco p-4">
         <h2 className="text-[16px] font-semibold text-verde">Deals pre-armados</h2>
         <p className="mt-1 text-sm text-verde-mut">
-          Usa tu cuenta local como comprador y el vendedor de demo. Si tu cuenta no tiene mUSD
-          suficientes, pide 100 mUSD al faucet automáticamente.
+          Usa tu cuenta local como comprador y el vendedor de demo.{" "}
+          {faucetAvailable
+            ? "Si tu cuenta no tiene mUSD suficientes, pide 100 mUSD al faucet automáticamente."
+            : "Esta red no tiene faucet automático: la cuenta local ya tiene que tener mUSD suficientes."}
         </p>
         {deviceIsDemoSeller ? (
           <Banner kind="warning" className="mt-3">

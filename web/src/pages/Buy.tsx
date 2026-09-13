@@ -185,7 +185,7 @@ export default function Buy() {
     <Layout>
       <h1 className="mt-6 font-display text-[26px] font-medium text-verde">Armar un pedido</h1>
       <p className="mt-1 text-sm text-verde-mut">
-        La custodia es real, en HSK mainnet. Fondeás en mUSD, un token de
+        La custodia es real, en {deployment.chain.name}. Fondeás en mUSD, un token de
         prueba sin valor real. No pagás gas: lo mandamos nosotros.
       </p>
 
