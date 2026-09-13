@@ -10,12 +10,14 @@ import { HashMono } from "../lib/ui/components/HashMono";
 import { getOrCreateAccount } from "../lib/burner";
 import { isBurnerPersistent } from "../lib/ui/burnerStatus";
 import { getDeploymentConfig } from "../config/deployment";
-import { parseAmountInput } from "../lib/ui/format";
+import { insufficientFundsMessage, parseAmountInput } from "../lib/ui/format";
 import { createOrder } from "../lib/ui/depositFlow";
 import { trackOrder } from "../lib/ui/orderRegistry";
 import { capItem } from "../lib/ui/orderLink";
 import { postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
 import { txExplorerUrl } from "../lib/ui/explorer";
+import { getPublicClient } from "../lib/ui/viemClient";
+import { getTokenBalance } from "../lib/ui/token";
 import { DropletIcon } from "../lib/ui/components/Icon";
 
 /** `deliveryDeadline` del flujo en vivo (docs/escrow-interface.md §4: now + 1800s). */
@@ -109,6 +111,25 @@ export default function Buy() {
 
     try {
       const buyer = getOrCreateAccount();
+      // Sin este chequeo, un comprador con 0 mUSD que no apretó el faucet
+      // manual de arriba pegaba directo a `createOrder` y se llevaba el
+      // mismo `SIMULATION_REVERTED`/`UNKNOWN` opaco del relayer. NO se pide
+      // el faucet automáticamente acá (a diferencia de `/demo`,
+      // `ensureDemoFunds.ts`): esta es la cuenta real del comprador, así que
+      // solo se avisa y se corta — el usuario decide si pedir fondos de
+      // prueba o no. Si la lectura de saldo tira (RPC caído/429), no se
+      // bloquea el pago: el relayer es la fuente de verdad y ya revierte la
+      // simulación si de verdad no alcanza.
+      try {
+        const balance = await getTokenBalance(getPublicClient(), deployment.tokenAddress, buyer.address);
+        if (balance < amountUnits) {
+          setStatus("error");
+          setErrorMessage(insufficientFundsMessage(balance, amountUnits));
+          return;
+        }
+      } catch (err) {
+        console.warn("No se pudo leer el saldo de mUSD antes de pagar; se sigue igual.", err);
+      }
       setStatus("relaying");
       const { orderRef, outcome } = await createOrder({
         buyer,

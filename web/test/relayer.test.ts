@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Hex } from "viem";
-import { relayErrorMaybeSentTx, type RelayOutcomeError } from "../src/lib/ui/relayer";
+import {
+  describeFaucetFailure,
+  relayErrorMaybeSentTx,
+  type FaucetOutcome,
+  type RelayOutcomeError,
+} from "../src/lib/ui/relayer";
 
 function err(code: string, hash?: Hex): RelayOutcomeError {
   return { code, message: "irrelevante para la clasificación", hash };
@@ -60,5 +65,37 @@ describe("relayErrorMaybeSentTx", () => {
   // poder apagar esa señal.
   it("hash presente gana sobre cualquier código, incluso uno de la lista 'no se mandó'", () => {
     expect(relayErrorMaybeSentTx(err("INVALID_REQUEST", "0xcccc" as Hex))).toBe(true);
+  });
+});
+
+function cooldown(availableAt: number | undefined): Extract<FaucetOutcome, { ok: false }> {
+  return { ok: false, code: "FAUCET_COOLDOWN", message: "cooldown", availableAt };
+}
+
+describe("describeFaucetFailure", () => {
+  it("agrega la hora cuando availableAt es un unix time válido y positivo", () => {
+    expect(describeFaucetFailure(cooldown(1_700_000_000))).toMatch(/^cooldown Disponible a las /);
+  });
+
+  it("omite la hora si availableAt es 0 (revert sin argumento decodificado)", () => {
+    expect(describeFaucetFailure(cooldown(0))).toBe("cooldown");
+  });
+
+  it("omite la hora si availableAt es NaN (postFaucet no pudo parsearlo)", () => {
+    expect(describeFaucetFailure(cooldown(Number.NaN))).toBe("cooldown");
+  });
+
+  it("omite la hora si availableAt es undefined", () => {
+    expect(describeFaucetFailure(cooldown(undefined))).toBe("cooldown");
+  });
+
+  it("un código que no es FAUCET_COOLDOWN nunca agrega hora, aunque traiga availableAt", () => {
+    const outcome: Extract<FaucetOutcome, { ok: false }> = {
+      ok: false,
+      code: "NOT_FOUND",
+      message: "no disponible",
+      availableAt: 1_700_000_000,
+    };
+    expect(describeFaucetFailure(outcome)).toBe("no disponible");
   });
 });
