@@ -172,9 +172,36 @@ From [`contracts/deployments/133.json`](contracts/deployments/133.json):
 
 These contracts are **deployed and reproducible but not verified** on the explorer. Local `forge build` output matches the on-chain runtime bytecode byte-for-byte, including the metadata hash (solc `0.8.28`, optimizer 200 runs, `evm_version = "prague"`), but Blockscout verification is blocked by two explorer-side limits: its gateway caps request bodies at ~102 KB (the flattened sources are 129–143 KB; stripping comments brings them to 52–62 KB and still compiles to identical runtime bytecode, which clears this limit), and this instance's allowed `evm_version` list ends at `cancun`, so it can't accept `prague` and reproduce the deployed bytecode. Sourcify can't verify chain 133 either — its registered RPC for the chain is currently misconfigured, so it fails to fetch bytecode. Verification will be possible once the explorer enables `prague`, or with a `cancun` redeploy. The address pages above still show live bytecode, balance, and transaction history.
 
-Mainnet (chain `177`, `hashkey` in `viem/chains`, real USDC.e) is supported by the same contract and deploy script but has not been deployed — see [Roadmap](#roadmap).
+Mainnet (chain `177`, `hashkey` in `viem/chains`) is deployed and verified — see [HSK Chain Mainnet (177)](#hsk-chain-mainnet-177) below.
 
 **Why HSK Chain:** it is a standard EVM chain — the contracts needed no custom opcodes or non-standard precompiles, `viem` ships first-class `hashkeyTestnet`/`hashkey` chain definitions, and a public testnet RPC/faucet made it practical to run the full gasless-relayer flow end-to-end for the demo.
+
+### HSK Chain Mainnet (177)
+
+Deployed and verified on `hashkey` mainnet (chain `177`), RPC `https://mainnet.hsk.xyz`, explorer `https://hsk.blockscout.com`. From [`contracts/deployments/177-musd-demo.json`](contracts/deployments/177-musd-demo.json) and [`contracts/deployments/177.json`](contracts/deployments/177.json):
+
+| Contract | Address | Verified |
+|---|---|---|
+| `MockUSD` ("Kuska Demo USD", mUSD, 6 dec, EIP-2612 permit, public faucet) | [`0x1dfAC4096b94Ed6d892223573d289B8165695dB0`](https://hsk.blockscout.com/address/0x1dfAC4096b94Ed6d892223573d289B8165695dB0) | Yes |
+| `KuskaEscrow` bound to mUSD (used for the end-to-end deal below) | [`0x955e09d2D14431f491F8E80A4db3CE82A2b3Dba1`](https://hsk.blockscout.com/address/0x955e09d2D14431f491F8E80A4db3CE82A2b3Dba1) | Yes |
+| `KuskaEscrow` bound to USDC.e (production configuration, no payment through it yet) | [`0xD11f19dC37a98b5008f7Ad60A93D93fd92cab644`](https://hsk.blockscout.com/address/0xD11f19dC37a98b5008f7Ad60A93D93fd92cab644) | Yes |
+| Arbiter (both escrows) | [`0x3ED8c38464C7354BA9f3c85Cc952b397068e98ed`](https://hsk.blockscout.com/address/0x3ED8c38464C7354BA9f3c85Cc952b397068e98ed) | — |
+| Dispute window (both escrows) | `86400` seconds, 24h (testnet uses `90`s for the demo) | — |
+
+The three deployments together cost 2.354 HSK at ~500 gwei base fee.
+
+**End-to-end deal on mainnet**, run through the real web app (local build pointed at chain 177, same relayer code as production), 1 mUSD, order ref `0x4a1d716b140e4688f3a0b9926b623c1488d3d0322b7888e0b84bfd8f015f43e5`:
+
+| Step | Tx | Gas paid by |
+|---|---|---|
+| Faucet mint to buyer | [`0xe79dd1966f9e6d7cda702c1c6a6aee41b1ef10ed970e97e43a6099e2899e9228`](https://hsk.blockscout.com/tx/0xe79dd1966f9e6d7cda702c1c6a6aee41b1ef10ed970e97e43a6099e2899e9228) | Relayer |
+| Deposit (permit + relayed) → `Funded` | [`0x9b87478b5543ba04317062729583392fa026d2dafc2662d64d3c0fdbff47fabe`](https://hsk.blockscout.com/tx/0x9b87478b5543ba04317062729583392fa026d2dafc2662d64d3c0fdbff47fabe) | Relayer |
+| Delivery claim (seller-signed, relayed) → `DeliveryClaimed` | [`0xa41ff80e020f27f790db41e0cf30558e0c3d76f7ef2068c40d70f8a282093449`](https://hsk.blockscout.com/tx/0xa41ff80e020f27f790db41e0cf30558e0c3d76f7ef2068c40d70f8a282093449) | Relayer |
+| Buyer confirmation → `release` → `Released` | [`0xd21141acb8daf9466a6a32ab2c43476ebf29c86021fefad93cef5a77a34b2355`](https://hsk.blockscout.com/tx/0xd21141acb8daf9466a6a32ab2c43476ebf29c86021fefad93cef5a77a34b2355) | Relayer |
+
+Buyer and seller held 0 HSK throughout the deal (gasless confirmed by `cast balance`); the seller received 1 mUSD and the escrow balance returned to 0; final `getDeal` state was 4 (`Released`); the seller page discovered the order on its own from mainnet event logs. The faucet mint plus the 3 relayed transactions cost 0.188 HSK total, all paid by the relayer.
+
+**Why a demo token, not USDC.e, for the deal above:** as of 2026-09-13 there was no usable USDC.e liquidity on HSK Chain mainnet (the only WHSK/USDC.e pool on HyperIndex held 0.000001 USDC.e; quotes returned 0), and the liquid USDT ([`0xF1B50eD67A9e2CC94Ad3c477779E2d4cBfFf9029`](https://hsk.blockscout.com/address/0xF1B50eD67A9e2CC94Ad3c477779E2d4cBfFf9029)) has no EIP-2612 permit, which Kuska's gasless flow requires. So the end-to-end run used mUSD, a demo token with no monetary value; the USDC.e-bound escrow above is deployed and verified, ready for a real payment once USDC.e liquidity is available. The public demo (`kuska-beta.vercel.app`) stays on HSK Chain Testnet 133, where a faucet exists — mainnet has no faucet by design.
 
 ## Security
 
@@ -263,7 +290,7 @@ Set `ALLOW_REDEPLOY=true` to intentionally overwrite it. `hsk_testnet`/`hsk_main
 
 ## Roadmap
 
-- Mainnet deployment (chain `177`) against real USDC.e.
+- ~~Mainnet deployment (chain `177`)~~ — done: both `KuskaEscrow` (mUSD and USDC.e configurations) are deployed and verified, and an end-to-end deal has run on mainnet with the demo mUSD token (see [HSK Chain Mainnet (177)](#hsk-chain-mainnet-177)). Remaining: a real payment through the USDC.e-bound escrow once USDC.e liquidity is available, and a production mainnet build of the frontend (the public demo stays on testnet 133).
 - A timeout or fallback path for `Disputed` deals, and/or a less centralized arbitration mechanism.
 - KYC on buyer/seller onboarding (explicitly out of scope today).
 - EIP-3009 (`transferWithAuthorization`) as an alternative to EIP-2612 permit for tokens that support it (explicitly out of scope today).

@@ -1,0 +1,9 @@
+{
+  "arbiter": "0x3ED8c38464C7354BA9f3c85Cc952b397068e98ed",
+  "chainId": 177,
+  "deployBlock": 27470801,
+  "disputeWindow": 86400,
+  "escrow": "0xD11f19dC37a98b5008f7Ad60A93D93fd92cab644",
+  "explorer": "https://hsk.blockscout.com",
+  "token": "0x054ed45810DbBAb8B27668922D110669c9D88D0a"
+}
