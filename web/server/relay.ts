@@ -7,17 +7,17 @@ import {
   type PublicClient,
   type WalletClient,
 } from "viem";
-import { kuskaEscrowAbi } from "../src/lib/escrow/abi";
-import { getDeal } from "../src/lib/escrow/read";
+import { kuskaEscrowAbi } from "../src/lib/escrow/abi.js";
+import { getDeal } from "../src/lib/escrow/read.js";
 import {
   buildCancel,
   buildDeliveryClaim,
   buildDeliveryConfirmation,
   buildDepositAuthorization,
   buildDispute,
-} from "../src/lib/escrow/typedData";
-import { findRevertedError, isNonceError } from "./viemErrors";
-import { isContractAddress } from "./contractGuard";
+} from "../src/lib/escrow/typedData.js";
+import { findRevertedError, isNonceError } from "./viemErrors.js";
+import { isContractAddress } from "./contractGuard.js";
 
 // ---------------------------------------------------------------------------
 // Esquemas por acción (docs/escrow-interface.md §6). uint256/uint64 viajan

@@ -1,7 +1,7 @@
-import { getServerConfig } from "../server/config";
-import { getRelayerClients } from "../server/clients";
-import { getClientIp } from "../server/clientIp";
-import { handleFaucet, type FaucetDeps } from "../server/faucet";
+import { getServerConfig } from "../server/config.js";
+import { getRelayerClients } from "../server/clients.js";
+import { getClientIp } from "../server/clientIp.js";
+import { handleFaucet, type FaucetDeps } from "../server/faucet.js";
 
 export const config = {
   maxDuration: 30,

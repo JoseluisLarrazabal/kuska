@@ -1,6 +1,6 @@
-import { getServerConfig } from "../server/config";
-import { getRelayerClients } from "../server/clients";
-import { handleRelay, type RelayDeps } from "../server/relay";
+import { getServerConfig } from "../server/config.js";
+import { getRelayerClients } from "../server/clients.js";
+import { handleRelay, type RelayDeps } from "../server/relay.js";
 
 // Vercel Functions (Node.js runtime, firma estándar Web Fetch para proyectos
 // no-Next — ver "Create Vercel Function for Other Frameworks",

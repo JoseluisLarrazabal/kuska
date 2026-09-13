@@ -1,6 +1,6 @@
-import { getServerConfig } from "../server/config";
-import { getRelayerClients } from "../server/clients";
-import { handleHealth } from "../server/health";
+import { getServerConfig } from "../server/config.js";
+import { getRelayerClients } from "../server/clients.js";
+import { handleHealth } from "../server/health.js";
 
 export const config = {
   maxDuration: 10,

@@ -1,7 +1,7 @@
 import http from "node:http";
-import relayHandler from "../api/relay";
-import faucetHandler from "../api/faucet";
-import healthHandler from "../api/health";
+import relayHandler from "../api/relay.js";
+import faucetHandler from "../api/faucet.js";
+import healthHandler from "../api/health.js";
 
 const PORT = 8787;
 
