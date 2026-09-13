@@ -1,0 +1,3 @@
+# Falso positivo de la regla generic-api-key: es la dirección pública del contrato
+# MockUSD en el manifiesto de despliegue de testnet, no un secreto.
+57b73657d6d460a90b208dd648807743fff623fb:contracts/deployments/133.json:generic-api-key:8
