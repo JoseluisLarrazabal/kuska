@@ -170,7 +170,7 @@ From [`contracts/deployments/133.json`](contracts/deployments/133.json):
 | Dispute window | `90` seconds |
 | Deploy block | `32996664` |
 
-These contracts are **deployed but not verified** on the explorer: the flattened source is ~129 KB and the explorer's verification gateway rejects payloads over ~100 KB with `HTTP 413`. The address pages above still show live bytecode, balance, and transaction history.
+These contracts are **deployed and reproducible but not verified** on the explorer. Local `forge build` output matches the on-chain runtime bytecode byte-for-byte, including the metadata hash (solc `0.8.28`, optimizer 200 runs, `evm_version = "prague"`), but Blockscout verification is blocked by two explorer-side limits: its gateway caps request bodies at ~102 KB (the flattened sources are 129–143 KB; stripping comments brings them to 52–62 KB and still compiles to identical runtime bytecode, which clears this limit), and this instance's allowed `evm_version` list ends at `cancun`, so it can't accept `prague` and reproduce the deployed bytecode. Sourcify can't verify chain 133 either — its registered RPC for the chain is currently misconfigured, so it fails to fetch bytecode. Verification will be possible once the explorer enables `prague`, or with a `cancun` redeploy. The address pages above still show live bytecode, balance, and transaction history.
 
 Mainnet (chain `177`, `hashkey` in `viem/chains`, real USDC.e) is supported by the same contract and deploy script but has not been deployed — see [Roadmap](#roadmap).
 
