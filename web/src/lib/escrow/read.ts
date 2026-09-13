@@ -1,5 +1,5 @@
 import type { Address, Hex, PublicClient } from "viem";
-import { kuskaEscrowAbi } from "./abi";
+import { kuskaEscrowAbi } from "./abi.js";
 
 /** `enum State { None, Funded, DeliveryClaimed, Disputed, Released, Refunded }` (0..5). */
 export enum DealState {

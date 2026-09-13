@@ -1,5 +1,5 @@
 import { isAddressEqual, type Account, type Address, type PublicClient } from "viem";
-import { kuskaEscrowAbi } from "../src/lib/escrow/abi";
+import { kuskaEscrowAbi } from "../src/lib/escrow/abi.js";
 
 export interface HealthDeps {
   publicClient: PublicClient;

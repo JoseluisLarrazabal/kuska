@@ -1,5 +1,5 @@
 import type { Address, Hex, PublicClient } from "viem";
-import { mockUsdAbi } from "./abi";
+import { mockUsdAbi } from "./abi.js";
 
 /** Dominio EIP-712 de `KuskaEscrow` (constructor: name "KuskaEscrow", version "1"). */
 export function escrowDomain(chainId: number, verifyingContract: Address) {

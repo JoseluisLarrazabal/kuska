@@ -1,5 +1,5 @@
 import { createPublicClient, createWalletClient, http, type PublicClient, type WalletClient } from "viem";
-import { getServerConfig } from "./config";
+import { getServerConfig } from "./config.js";
 
 export interface RelayerClients {
   publicClient: PublicClient;

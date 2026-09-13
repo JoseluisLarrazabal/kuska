@@ -1,16 +1,20 @@
 import http from "node:http";
-import relayHandler from "../api/relay";
-import faucetHandler from "../api/faucet";
-import healthHandler from "../api/health";
+import { POST as relayPost } from "../api/relay.js";
+import { POST as faucetPost } from "../api/faucet.js";
+import { GET as healthGet } from "../api/health.js";
 
 const PORT = 8787;
 
 type Handler = (request: Request) => Promise<Response>;
 
-const routes: Record<string, Handler> = {
-  "/api/relay": relayHandler,
-  "/api/faucet": faucetHandler,
-  "/api/health": healthHandler,
+// Cada ruta expone solo los métodos que el módulo real exporta (mismo
+// contrato que Vercel: named export por método HTTP). Un método sin entrada
+// acá devuelve 405, igual que lo haría Vercel si no matchea ningún named
+// export para ese método.
+const routes: Record<string, Record<string, Handler>> = {
+  "/api/relay": { POST: relayPost },
+  "/api/faucet": { POST: faucetPost },
+  "/api/health": { GET: healthGet },
 };
 
 async function toWebRequest(req: http.IncomingMessage): Promise<Request> {
@@ -59,10 +63,18 @@ async function writeWebResponse(res: http.ServerResponse, response: Response): P
 const server = http.createServer((req, res) => {
   void (async () => {
     const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
-    const handler = routes[url.pathname];
-    if (!handler) {
+    const methodHandlers = routes[url.pathname];
+    if (!methodHandlers) {
       res.statusCode = 404;
       res.end("Not found");
+      return;
+    }
+    const method = req.method ?? "GET";
+    const handler = methodHandlers[method];
+    if (!handler) {
+      res.statusCode = 405;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ code: "INVALID_REQUEST" }));
       return;
     }
     try {

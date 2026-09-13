@@ -7,6 +7,7 @@ web/.env.local
 .vercel/
 *.log
 .DS_Store
+*.tsbuildinfo
 
 # Claude Code worktrees and local state
 .claude/

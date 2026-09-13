@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { Account, Address, Hex, PublicClient, WalletClient } from "viem";
-import { mockUsdAbi } from "../src/lib/escrow/abi";
-import { findRevertedError } from "./viemErrors";
-import { isContractAddress } from "./contractGuard";
+import { mockUsdAbi } from "../src/lib/escrow/abi.js";
+import { findRevertedError } from "./viemErrors.js";
+import { isContractAddress } from "./contractGuard.js";
 
 const faucetRequestSchema = z.object({
   to: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "dirección inválida"),
