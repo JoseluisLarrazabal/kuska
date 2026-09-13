@@ -21,11 +21,12 @@ import { getDeploymentConfig } from "../config/deployment";
 import { getPublicClient } from "../lib/ui/viemClient";
 import { kuskaEscrowAbi } from "../lib/escrow/abi";
 import { getTokenBalance } from "../lib/ui/token";
-import { getHealth, postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
+import { describeFaucetFailure, getHealth, postFaucet, relayErrorMaybeSentTx } from "../lib/ui/relayer";
+import { ensureDemoFunds } from "../lib/ui/ensureDemoFunds";
 import { createOrder } from "../lib/ui/depositFlow";
 import { listTrackedOrders, trackOrder, type TrackedOrder } from "../lib/ui/orderRegistry";
 import { capItem } from "../lib/ui/orderLink";
-import { formatHskAmount, formatUnixTime } from "../lib/ui/format";
+import { formatHskAmount } from "../lib/ui/format";
 import { txExplorerUrl } from "../lib/ui/explorer";
 
 /** Saldo mínimo de HSK para pagar gas (docs/escrow-interface.md §6). */
@@ -87,6 +88,11 @@ export default function Demo() {
   const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
   const [creating, setCreating] = useState<"normal" | "refund" | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Progreso visible mientras `armDemoDeal` fondea al comprador local antes
+  // de armar el deal (ver `ensureDemoFunds`) — sin esto, el único feedback
+  // durante ese tramo era el `busy` genérico del botón, que en una demo en
+  // vivo puede tardar unos segundos (faucet + polling de saldo) sin decir por qué.
+  const [fundingDemo, setFundingDemo] = useState(false);
   const [demoOrders, setDemoOrders] = useState<TrackedOrder[]>(() =>
     listTrackedOrders().filter((o) => o.role === "demo"),
   );
@@ -145,11 +151,7 @@ export default function Demo() {
       refetch();
     } else {
       setFaucetStatus("error");
-      setFaucetMessage(
-        outcome.code === "FAUCET_COOLDOWN" && outcome.availableAt
-          ? `${outcome.message} Disponible a las ${formatUnixTime(outcome.availableAt)}.`
-          : outcome.message,
-      );
+      setFaucetMessage(describeFaucetFailure(outcome));
     }
   }
 
@@ -162,16 +164,58 @@ export default function Demo() {
     setCreating(kind);
     setCreateError(null);
     setAmbiguousDemoOrder(null);
+    setFundingDemo(false);
     // Capturado una sola vez acá: es el label que efectivamente se trackea
     // para este deal, tanto si falla ambiguo como si sale bien — evita que
     // `ambiguousDemoOrder` (y su link de recuperación) queden sin `item`.
     const item = kind === "refund" ? "Deal de reembolso (demo)" : "Deal normal (demo)";
+    const amount = 25_000_000n; // 25.00 mUSD (demo)
     try {
       const buyer = getOrCreateAccount();
+      // La cuenta local del comprador arranca en 0 mUSD: sin este paso,
+      // `createOrder` pega directo al relayer con saldo insuficiente y el
+      // permit revierte en la simulación (`SIMULATION_REVERTED`/`UNKNOWN`),
+      // una falla opaca en plena demo en vivo. `ensureDemoFunds` es puro y
+      // testeado (`ensureDemoFunds.test.ts`); acá solo se le inyectan las
+      // dependencias reales.
+      const { tokenAddress } = getDeploymentConfig();
+      const client = getPublicClient();
+      const funded = await ensureDemoFunds({
+        amount,
+        getBalance: () => getTokenBalance(client, tokenAddress, buyer.address),
+        requestFaucet: () => postFaucet(buyer.address),
+        onFunding: () => setFundingDemo(true),
+      });
+      // El fondeo (si hizo falta) ya terminó acá, haya salido bien o mal —
+      // sin este reset temprano, `fundingDemo` seguía en `true` durante todo
+      // `createOrder` (permit + relay + receipt) y el mensaje "Acreditando
+      // mUSD…" quedaba pegado mintiendo sobre qué tramo está corriendo. El
+      // `finally` de más abajo lo repite por si se corta antes de llegar acá.
+      setFundingDemo(false);
+      if (!funded.ok) {
+        if (funded.reason === "faucet_failed") {
+          setCreateError(
+            `Tu cuenta local no tiene mUSD suficientes para este deal (25.00 mUSD) y el pedido ` +
+              `automático al faucet falló: ${describeFaucetFailure(funded.faucet)}`,
+          );
+        } else {
+          setCreateError(
+            "Se pidieron 100 mUSD al faucet para tu cuenta local, pero el saldo todavía no se " +
+              "ve reflejado en la red. Esperá unos segundos y volvé a intentar.",
+          );
+        }
+        return;
+      }
+      if (funded.funded) {
+        // El faucet acreditó fondos nuevos: refrescar el panel de saldos
+        // antes de seguir, para que no quede desactualizado mientras se arma
+        // el deal.
+        refetch();
+      }
       const { orderRef, outcome } = await createOrder({
         buyer,
         seller: demoSeller,
-        amount: 25_000_000n, // 25.00 mUSD (demo)
+        amount,
         deliverySeconds: kind === "refund" ? 120 : 1800,
       });
       if (!outcome.ok) {
@@ -193,6 +237,7 @@ export default function Demo() {
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : "No se pudo armar el deal de demo.");
     } finally {
+      setFundingDemo(false);
       setCreating(null);
     }
   }
@@ -449,7 +494,8 @@ export default function Demo() {
       <section className="mt-6 rounded-card bg-blanco p-4">
         <h2 className="text-[16px] font-semibold text-verde">Deals pre-armados</h2>
         <p className="mt-1 text-sm text-verde-mut">
-          Fondea automáticamente con tu cuenta local como comprador y el vendedor de demo.
+          Usa tu cuenta local como comprador y el vendedor de demo. Si tu cuenta no tiene mUSD
+          suficientes, pide 100 mUSD al faucet automáticamente.
         </p>
         {deviceIsDemoSeller ? (
           <Banner kind="warning" className="mt-3">
@@ -475,6 +521,11 @@ export default function Demo() {
             Armar deal de reembolso (vence en 2 min)
           </Button>
         </div>
+        {fundingDemo ? (
+          <p className="mt-2 text-sm text-verde-mut">
+            Acreditando mUSD de prueba en tu cuenta local…
+          </p>
+        ) : null}
         {createError ? (
           <Banner kind="error" className="mt-3">
             <p>{createError}</p>

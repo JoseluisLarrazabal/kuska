@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { endSentence, formatDeadline, formatHskAmount, parseAmountInput } from "../src/lib/ui/format";
+import {
+  endSentence,
+  formatDeadline,
+  formatHskAmount,
+  insufficientFundsMessage,
+  parseAmountInput,
+} from "../src/lib/ui/format";
 
 describe("parseAmountInput", () => {
   it("rechaza notación científica (pasaba con Number, rompía parseUnits)", () => {
@@ -93,6 +99,23 @@ describe("formatDeadline", () => {
 
   it("acepta bigint para `unixSeconds`", () => {
     expect(() => formatDeadline(BigInt(sameDayNow) + 3600n, sameDayNow)).not.toThrow();
+  });
+});
+
+describe("insufficientFundsMessage", () => {
+  it("muestra ambos montos formateados con 2 decimales, en unidades legibles", () => {
+    const message = insufficientFundsMessage(0n, 25_000_000n);
+    expect(message).toContain("necesitás 25.00");
+    expect(message).toContain("tenés 0.00");
+  });
+
+  it("redondea a 2 decimales igual que `formatDemoUsd`", () => {
+    const message = insufficientFundsMessage(3_456_789n, 10_000_000n);
+    expect(message).toContain("tenés 3.45");
+  });
+
+  it("menciona el botón del faucet como salida", () => {
+    expect(insufficientFundsMessage(0n, 1_000_000n)).toMatch(/botón de arriba/i);
   });
 });
 

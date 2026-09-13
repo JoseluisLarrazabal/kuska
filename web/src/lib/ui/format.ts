@@ -43,6 +43,23 @@ export function formatDemoUsd(amount: bigint): string {
 }
 
 /**
+ * Mensaje cuando el saldo de mUSD del comprador no alcanza para pagar un
+ * monto — usado por `Buy.tsx` antes de mandar `createOrder`: un comprador con
+ * 0 mUSD que no apretó primero el botón manual del faucet se llevaba el mismo
+ * `SIMULATION_REVERTED`/`UNKNOWN` opaco del relayer ("La operación no se pudo
+ * completar"). El equivalente en `/demo` (`ensureDemoFunds.ts`) en vez de
+ * avisar pide el faucet automáticamente porque ahí el "comprador" es una
+ * cuenta de demo descartable; acá es la compra real, así que solo se bloquea
+ * y se explica — no se le pide plata de mentira a la cuenta del usuario.
+ */
+export function insufficientFundsMessage(balance: bigint, amount: bigint): string {
+  return (
+    `Tu cuenta no tiene mUSD suficientes para este pago (necesitás ${formatDemoUsd(amount)}, ` +
+    `tenés ${formatDemoUsd(balance)}). Pedí mUSD de prueba con el botón de arriba.`
+  );
+}
+
+/**
  * Redondea la representación decimal en string `intPart.decPart` a
  * `decimals` posiciones (redondeo "half up", como hace la gente), devuelta
  * como string sin ceros finales. Trabaja con `BigInt` sobre los dígitos

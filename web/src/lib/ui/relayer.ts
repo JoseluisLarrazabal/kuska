@@ -1,5 +1,6 @@
 import type { Address, Hex } from "viem";
 import { describeEscrowError } from "../escrow/errors";
+import { formatUnixTime } from "./format";
 
 // ---------------------------------------------------------------------------
 // Formas de request espejo de `docs/escrow-interface.md` §6. No se importan
@@ -215,6 +216,27 @@ export async function postFaucet(to: Address): Promise<FaucetOutcome> {
     return { ok: false, code, message: "El faucet no está disponible en esta red." };
   }
   return { ok: false, code, message: DEFAULT_RELAY_MESSAGE };
+}
+
+/**
+ * Arma el mensaje de una falla del faucet, agregando la hora de reapertura
+ * solo cuando `availableAt` es un dato utilizable. `availableAt` puede llegar
+ * `0` (el revert `FaucetCooldown` sin argumento decodificado, ver
+ * `server/faucet.ts`) o `NaN` (`postFaucet` lo parsea con `Number(...)`, que
+ * da `NaN` si el campo no era un string numérico) — en ambos casos "Disponible
+ * a las Invalid Date" sería peor que mostrar el mensaje sin la hora. Usada
+ * tanto por `requestFaucet` (Faucet manual) como por `armDemoDeal` (faucet
+ * automático de `/demo`) para que ambos caminos queden consistentes.
+ */
+export function describeFaucetFailure(outcome: Extract<FaucetOutcome, { ok: false }>): string {
+  if (
+    outcome.code === "FAUCET_COOLDOWN" &&
+    Number.isFinite(outcome.availableAt) &&
+    (outcome.availableAt as number) > 0
+  ) {
+    return `${outcome.message} Disponible a las ${formatUnixTime(outcome.availableAt as number)}.`;
+  }
+  return outcome.message;
 }
 
 // ---------------------------------------------------------------------------
