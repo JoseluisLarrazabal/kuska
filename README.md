@@ -6,7 +6,7 @@
 
 On-chain stablecoin escrow for B2B cash-on-delivery commerce on HSK Chain. The buyer pays without gas, the seller proves delivery with a signature and a QR, and funds only move when both sides agree — or when an explicit, on-chain rule (a deadline, a silence window, a declared arbiter) says they should.
 
-**Demo:** _URL pendiente_
+**Demo:** https://kuska-beta.vercel.app (HSK Chain testnet, chain 133)
 
 Built for the **Buildathon Ethereum Bolivia 2026** — **HSK Chain track**, also submitted to the **Real-World Ethereum Applications** main track.
 
